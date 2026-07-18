@@ -1,0 +1,84 @@
+{
+  "name": "@nandan-varma/git-fs-s3",
+  "version": "0.0.1",
+  "description": "isomorphic-git filesystem backend for S3-compatible object storage (AWS S3, Cloudflare R2, MinIO) — run git servers without a disk",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./s3": {
+      "types": "./dist/s3.d.ts",
+      "import": "./dist/s3.js",
+      "require": "./dist/s3.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/ test/",
+    "lint:fix": "biome check --write src/ test/",
+    "format": "biome format --write src/ test/",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "git",
+    "isomorphic-git",
+    "s3",
+    "r2",
+    "cloudflare-r2",
+    "object-storage",
+    "serverless",
+    "git-server",
+    "filesystem",
+    "fs"
+  ],
+  "author": "Nandan Varma",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nandan-varma/git-fs-s3.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nandan-varma/git-fs-s3/issues"
+  },
+  "homepage": "https://github.com/nandan-varma/git-fs-s3#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "lru-cache": "^11.2.1"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-s3": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-s3": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@biomejs/biome": "^2.3.8",
+    "@types/node": "^22.15.21",
+    "isomorphic-git": "^1.27.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.3"
+  },
+  "allowScripts": {
+    "esbuild@0.27.7": true
+  }
+}
