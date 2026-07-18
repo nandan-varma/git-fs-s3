@@ -13,8 +13,15 @@ const textDecoder = new TextDecoder();
 // Text
 // ---------------------------------------------------------------------------
 
-/** Encode a UTF-8 string to bytes. */
-export function encodeUtf8(data: string): Uint8Array {
+/**
+ * Encode a UTF-8 string to bytes.
+ *
+ * Return type pinned to `Uint8Array<ArrayBuffer>` (not the bare `Uint8Array`,
+ * whose default type argument differs across TypeScript versions) so it's
+ * always assignable to Fetch API `BodyInit` regardless of a consumer's own
+ * TypeScript/lib version.
+ */
+export function encodeUtf8(data: string): Uint8Array<ArrayBuffer> {
 	return textEncoder.encode(data);
 }
 
@@ -36,7 +43,7 @@ export function decodeAscii(data: Uint8Array): string {
 // ---------------------------------------------------------------------------
 
 /** Concatenate any number of Uint8Arrays into one. */
-export function concat(...parts: Uint8Array[]): Uint8Array {
+export function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
 	let total = 0;
 	for (const p of parts) total += p.length;
 	const out = new Uint8Array(total);
@@ -78,7 +85,7 @@ export function toBase64(data: Uint8Array): string {
 }
 
 /** Hex string → Uint8Array. */
-export function fromHex(hex: string): Uint8Array {
+export function fromHex(hex: string): Uint8Array<ArrayBuffer> {
 	const bytes = new Uint8Array(hex.length / 2);
 	for (let i = 0; i < bytes.length; i++) {
 		bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
@@ -105,7 +112,9 @@ export async function sha1(data: Uint8Array | string): Promise<string> {
  * Deflate compress via the CompressionStream Web API.
  * Falls back to throwing if CompressionStream is unavailable (very old runtimes).
  */
-export async function deflate(data: Uint8Array): Promise<Uint8Array> {
+export async function deflate(
+	data: Uint8Array,
+): Promise<Uint8Array<ArrayBuffer>> {
 	const stream = new Blob([data])
 		.stream()
 		.pipeThrough(new CompressionStream("deflate"));

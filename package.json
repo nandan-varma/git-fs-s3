@@ -1,6 +1,6 @@
 {
   "name": "@nandan-varma/git-fs-s3",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "isomorphic-git filesystem backend for S3-compatible object storage (AWS S3, Cloudflare R2, MinIO) — run git servers without a disk",
   "type": "module",
   "exports": {

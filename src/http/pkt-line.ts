@@ -7,17 +7,19 @@
 import { concat, decodeAscii, decodeUtf8, encodeUtf8 } from "../edge-utils.js";
 
 /** Flush packet: exactly four zero bytes. */
-export const FLUSH = new Uint8Array([0x30, 0x30, 0x30, 0x30]); // "0000"
+export const FLUSH: Uint8Array<ArrayBuffer> = new Uint8Array([
+	0x30, 0x30, 0x30, 0x30,
+]); // "0000"
 
 /** Frame a UTF-8 string as one pkt-line. */
-export function pktLine(data: string): Uint8Array {
+export function pktLine(data: string): Uint8Array<ArrayBuffer> {
 	const body = encodeUtf8(data);
 	const len = (body.length + 4).toString(16).padStart(4, "0");
 	return concat(encodeUtf8(len), body);
 }
 
 /** Frame raw bytes as one pkt-line. */
-export function pktLineBuffer(body: Uint8Array): Uint8Array {
+export function pktLineBuffer(body: Uint8Array): Uint8Array<ArrayBuffer> {
 	const len = (body.length + 4).toString(16).padStart(4, "0");
 	return concat(encodeUtf8(len), body);
 }
@@ -54,7 +56,9 @@ export function parsePktLines(buf: Uint8Array): Array<string | null> {
  */
 const SIDE_BAND_MAX_CHUNK = 65515;
 
-export function sideBandPackfile(packData: Uint8Array): Uint8Array {
+export function sideBandPackfile(
+	packData: Uint8Array,
+): Uint8Array<ArrayBuffer> {
 	const parts: Uint8Array[] = [];
 	for (
 		let offset = 0;

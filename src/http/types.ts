@@ -1,10 +1,18 @@
 import type { Repo } from "../ops/types.js";
 
-/** Transport-agnostic HTTP response the handlers produce. */
+/**
+ * Transport-agnostic HTTP response the handlers produce.
+ *
+ * `body` is pinned to `Uint8Array<ArrayBuffer>` (not the bare `Uint8Array`,
+ * whose default type argument isn't consistent across TypeScript versions)
+ * so it's always assignable to Fetch API `BodyInit` regardless of which
+ * TypeScript/lib version a consumer compiles against — every producer here
+ * (`concat`, `pktLine`, `TextEncoder.encode`) is ArrayBuffer-backed already.
+ */
 export interface GitHttpResult {
 	status: number;
 	headers: Record<string, string>;
-	body: Uint8Array;
+	body: Uint8Array<ArrayBuffer>;
 }
 
 /** Optional instrumentation hooks shared by the /http handlers. */
