@@ -19,6 +19,12 @@ export interface S3ObjectStoreOptions {
 	bucket: string;
 	/** Key prefix for every object, e.g. `"git"`. Optional. */
 	prefix?: string;
+	/**
+	 * Derive a Content-Type header for uploads from the (un-prefixed) key.
+	 * Return `undefined` to let S3 apply its default. Cosmetic — git never
+	 * reads it back — but keeps refs and config human-readable in bucket UIs.
+	 */
+	contentType?: (key: string) => string | undefined;
 }
 
 function isNotFound(error: unknown): boolean {
@@ -43,10 +49,12 @@ export class S3ObjectStore implements ObjectStore {
 	private readonly client: S3Client;
 	private readonly bucket: string;
 	private readonly prefix: string;
+	private readonly contentType?: (key: string) => string | undefined;
 
 	constructor(options: S3ObjectStoreOptions) {
 		this.client = options.client;
 		this.bucket = options.bucket;
+		this.contentType = options.contentType;
 		this.prefix = options.prefix
 			? options.prefix.replace(/\/+$/, "").concat("/")
 			: "";
@@ -75,6 +83,7 @@ export class S3ObjectStore implements ObjectStore {
 				Bucket: this.bucket,
 				Key: this.fullKey(key),
 				Body: data,
+				ContentType: this.contentType?.(key),
 			}),
 		);
 	}

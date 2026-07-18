@@ -46,6 +46,27 @@ export interface GitFsOptions {
 	 * Defaults to `""` (paths map directly to keys).
 	 */
 	prefix?: string;
+	/**
+	 * Track, per git directory, whether any loose objects exist at all.
+	 * Fully packed repositories then skip the doomed round trip probing a
+	 * loose-object path that is guaranteed to miss — but only after an
+	 * explicit `detectLooseObjects(gitdir)` call has registered the gitdir.
+	 * Default false.
+	 */
+	looseObjectHints?: boolean;
+	/**
+	 * Paths (relative to the fs, before `prefix` is applied) that are known
+	 * never to exist; `readFile`/`stat` answer ENOENT for them with zero
+	 * store calls. Useful for files git probes on every operation but this
+	 * backend never writes, such as `packed-refs` or `shallow` under a known
+	 * gitdir layout. Match precisely — a plain suffix check is wrong, since
+	 * e.g. `refs/heads/packed-refs` is a legal branch ref.
+	 */
+	isStructurallyAbsent?: (path: string) => boolean;
+	/** Time-to-live for loose-object hints in milliseconds. Default 3 600 000. */
+	hintTtlMs?: number;
+	/** Diagnostic sink for notable fs events (hint detection results). */
+	onNote?: (message: string) => void;
 }
 
 export type Encoding = "utf8";

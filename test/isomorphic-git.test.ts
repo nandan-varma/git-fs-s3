@@ -4,6 +4,7 @@ import type { GitFsClient } from "../src/index.js";
 import {
 	createCachedStore,
 	createGitFs,
+	createRetryStore,
 	MemoryObjectStore,
 } from "../src/index.js";
 
@@ -162,5 +163,102 @@ describe("isomorphic-git end-to-end on MemoryObjectStore", () => {
 		});
 		const log = await git.log({ fs: cachedFs, gitdir: dir, ref: "main" });
 		expect(log).toHaveLength(1);
+	});
+});
+
+describe("isomorphic-git through the full optimized stack", () => {
+	const gitdir = "repos/alice/blog/git";
+	let backend: MemoryObjectStore;
+	let fs: ReturnType<typeof createGitFs>;
+
+	beforeEach(async () => {
+		backend = new MemoryObjectStore();
+		const cached = createCachedStore(createRetryStore(backend), {
+			cacheMisses: true,
+			cacheLists: true,
+		});
+		fs = createGitFs(cached, {
+			looseObjectHints: true,
+			isStructurallyAbsent: (p) =>
+				p === `${gitdir}/packed-refs` || p === `${gitdir}/shallow`,
+		});
+		await git.init({ fs, gitdir, bare: true, defaultBranch: "main" });
+	});
+
+	it("runs the end-to-end flow with hints active", async () => {
+		await fs.detectLooseObjects(gitdir);
+		const first = await commitFile(fs, gitdir, {
+			path: "a.txt",
+			content: "one",
+			message: "first\n",
+			parent: [],
+		});
+		const second = await commitFile(fs, gitdir, {
+			path: "a.txt",
+			content: "two",
+			message: "second\n",
+			parent: [first.commitOid],
+		});
+		await git.writeRef({
+			fs,
+			gitdir,
+			ref: "refs/heads/main",
+			value: second.commitOid,
+			force: true,
+		});
+		await fs.prefetchPacks(gitdir);
+
+		const log = await git.log({ fs, gitdir, ref: "main" });
+		expect(log.map((e) => e.commit.message)).toEqual(["second\n", "first\n"]);
+
+		await git.branch({ fs, gitdir, ref: "feature" });
+		expect((await git.listBranches({ fs, gitdir })).sort()).toEqual([
+			"feature",
+			"main",
+		]);
+	});
+
+	it("serves fresh reads after an external writer plus invalidate()", async () => {
+		const { commitOid } = await commitFile(fs, gitdir, {
+			path: "f",
+			content: "x",
+			message: "c\n",
+			parent: [],
+		});
+		await git.writeRef({
+			fs,
+			gitdir,
+			ref: "refs/heads/main",
+			value: commitOid,
+			force: true,
+		});
+		// Prime the caches with the current ref and a doomed loose probe.
+		expect(await git.resolveRef({ fs, gitdir, ref: "main" })).toBe(commitOid);
+		await fs.detectLooseObjects(gitdir);
+
+		// An "external" writer (pushstack's hydrate/sync path) updates the ref
+		// behind the cache's back.
+		const other = createGitFs(backend);
+		const next = await commitFile(other, gitdir, {
+			path: "f",
+			content: "y",
+			message: "external\n",
+			parent: [commitOid],
+		});
+		await git.writeRef({
+			fs: other,
+			gitdir,
+			ref: "refs/heads/main",
+			value: next.commitOid,
+			force: true,
+		});
+
+		// Without invalidation the cached ref would still resolve stale.
+		fs.invalidate(gitdir);
+		expect(await git.resolveRef({ fs, gitdir, ref: "main" })).toBe(
+			next.commitOid,
+		);
+		const log = await git.log({ fs, gitdir, ref: "main" });
+		expect(log.map((e) => e.commit.message)).toEqual(["external\n", "c\n"]);
 	});
 });
