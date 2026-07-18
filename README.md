@@ -10,7 +10,11 @@ An [isomorphic-git](https://isomorphic-git.org) filesystem backend for S3-compat
 isomorphic-git  ──fs──►  git-fs-s3  ──►  ObjectStore  ──►  S3 / R2 / MinIO / memory
 ```
 
-Extracted from the git layer of a production git-hosting service, where it serves clones, pushes, and repo browsing directly against Cloudflare R2 from Vercel functions.
+Extracted from the git layer of a production git-hosting service, where it serves clones, pushes, and repo browsing directly against Cloudflare R2 from Vercel functions. Three layers, usable independently:
+
+- **root export** — the fs backend itself (`createGitFs`, stores, caching).
+- **`/http`** — a git smart-HTTP protocol handler (`upload-pack`/`receive-pack`) built on it.
+- **`/ops`** — higher-level git-hosting operations (branches, commits, diffs, history, merge) built on top of that.
 
 ## Why
 
@@ -171,6 +175,79 @@ Wraps any store with exponential-backoff retries and a per-instance circuit brea
 - `breaker` — `{ threshold: 5, resetMs: 30_000 }` by default, or `false` to disable. While open, calls fail fast with `CircuitOpenError` (`code: "EUNAVAILABLE"`).
 - `onRetry(info)` — logging hook.
 
+## Git smart-HTTP
+
+`@nandan-varma/git-fs-s3/http` implements the git smart-HTTP protocol (`info/refs`, `upload-pack`, `receive-pack`) as plain functions over a `Repo` — no framework assumptions, Fetch-API-shaped inputs/outputs. Extracted from the same production git-hosting service's HTTP layer, so it's what actually serves `git clone`/`git push` over HTTPS: pkt-line framing, side-band-64k packfile chunking (required once a client like isomorphic-git negotiates it — it always demuxes the response), CAS-checked ref updates, and pack consolidation.
+
+```typescript
+import {
+  handleInfoRefs,
+  handleUploadPack,
+  parseReceivePackBody,
+  applyReceivePack,
+  receivePackResponse,
+} from "@nandan-varma/git-fs-s3/http";
+
+// GET .../info/refs?service=git-upload-pack — auth/authz is the caller's job
+export async function infoRefs(repo: Repo, service: "git-upload-pack" | "git-receive-pack") {
+  const { status, headers, body } = await handleInfoRefs(repo, { service });
+  return new Response(body, { status, headers });
+}
+
+// POST .../git-upload-pack (clone/fetch)
+export async function uploadPack(repo: Repo, request: Request) {
+  const body = new Uint8Array(await request.arrayBuffer());
+  const { status, headers, body: respBody } = await handleUploadPack(repo, body);
+  return new Response(respBody, { status, headers });
+}
+
+// POST .../git-receive-pack (push)
+export async function receivePack(repo: Repo, request: Request) {
+  const body = new Uint8Array(await request.arrayBuffer());
+  const { results, stalePackPaths } = await applyReceivePack(
+    repo,
+    parseReceivePackBody(body),
+    { repack: { threshold: 4 } }, // or false to never auto-consolidate
+  );
+  // stalePackPaths were removed locally by the repack — delete them from any
+  // secondary storage this repo also lives in, same as you'd invalidate a cache.
+  const { status, headers, body: respBody } = receivePackResponse(results);
+  return new Response(respBody, { status, headers });
+}
+```
+
+Every client-supplied ref name in a push is validated with `isSafeFullRefName` (from the top-level export, see below) *inside* `applyRefUpdates`/`applyReceivePack` before it reaches any filesystem call — `git.commit`/`git.merge`/`git.deleteBranch` and the raw `git.resolveRef`/`git.deleteRef`/`git.writeRef` isomorphic-git calls this module uses internally do **not** validate ref names themselves (only `git.branch` and the top-level `git.writeRef` do), so an unvalidated `"../"`-laden ref name is a cross-repo path traversal on any shared-storage server. If you build additional git-touching endpoints on top of this package, run ref/branch names from request input through `isSafeFullRefName`/`isSafeBranchName`/`isSafeRefName`/`isSafeRepoPath` yourself first.
+
+`HttpHooks` (`{ step?, onWarn? }`), accepted by every handler, is the instrumentation seam: `step(label, fn)` wraps a timed sub-step — drop in an app's own request-scoped timer — and `onWarn(message, error)` surfaces non-fatal problems (a missing object during a reachability walk, a failed repack). `handleUploadPack`'s `beforeWalk` option is where to wire loose-object detection (`GitFs.detectLooseObjects`, above) so a fully packed repo's reachability walk doesn't pay a doomed loose-object probe per object.
+
+`repackRepository(repo, options?, hooks?)` — also exported standalone for out-of-band maintenance (clearing a backlog outside a live push) — consolidates all packs into one once `objects/pack/` crosses `options.threshold` (default `REPACK_PACK_COUNT_THRESHOLD = 4`) packs, verifying every object's SHA-1 independently before writing (isomorphic-git's *packed*-object read path never checks a resolved delta's content against the requested oid — only the loose-object branch does). Returns the gitdir-relative paths of the `.pack`/`.idx` files it removed locally; if this repo's storage is also synced elsewhere, delete those same paths there too, or a reader served by the stale copy re-fetches objects that are gone from the pack it expects them in.
+
+## App-layer git operations
+
+`@nandan-varma/git-fs-s3/ops` is a higher-level layer for building a git-hosting UI on top of `createGitFs` — the operations a repo browser / PR flow actually needs, each taking a `Repo` (`{ fs, gitdir, cache? }`) plus an optional `OpsHooks` (`{ resultCache?, step?, onNote?, prefetchPacks? }`) for the same timing/caching seam `GitFs` and `/http` use:
+
+- **Branches** — `listBranches`, `createBranchFrom`, `deleteBranchByName`.
+- **Commits** — `commitFilesToBare` (write one or more files as a single commit against a branch, creating it if new), `deleteFileFromBare`, `authorNow`.
+- **Trees** — `upsertTree`/`deleteFromTree` (overlay blobs onto a tree, return the new root oid), `listTreeEntries`, `findTreeEntry`.
+- **History** — `getCommitLog`/`getCommitHistory` (cached, resumable commit-chain walks — reuses a previously-walked prefix instead of re-walking from HEAD), `getFileContent`/`getFileFromRef`/`getTreeFromRef`, `getFileHistory` (per-file commit history), `getLastCommitsForTree` (the "last commit" column on a directory listing, batched two-phase prefetch-then-resolve).
+- **Diff** — `getCommitDiff`/`getDiffBetweenRefs`, unified-diff patches via the `diff` package (optional peer dependency).
+- **Merge** — `analyzeMerge` (fast-forward/diverged pre-check — not a real content-conflict check, see its doc comment) and `fastForwardMerge`.
+
+```typescript
+import { commitFilesToBare, authorNow, getCommitLog } from "@nandan-varma/git-fs-s3/ops";
+
+await commitFilesToBare(repo, {
+  branch: "main",
+  message: "Update README",
+  author: authorNow("Ada", "ada@example.com"),
+  files: [{ path: "README.md", content: "# hello\n" }],
+});
+
+const { entries } = await getCommitLog(repo, { ref: "main", depth: 50 });
+```
+
+`resultKeyPrefixes` (from `/ops`) lists the `ResultCache` key prefixes these functions write under — evict them after rewriting a repo's storage out of band (bulk sync, rename), or a cached walk result outlives the history it describes.
+
 ## Semantics & limitations
 
 - **Bare repositories are the target.** Plumbing (`writeBlob`/`writeTree`/`writeCommit`/`readCommit`/`log`/refs/branches) is covered by the test suite. Worktree operations (`checkout`, `add`, `status`) want a real disk — hydrate to `/tmp` for those.
@@ -180,8 +257,7 @@ Wraps any store with exponential-backoff retries and a per-instance circuit brea
 
 ## Roadmap
 
-- Git smart-HTTP protocol handler (`upload-pack`/`receive-pack`) as a Fetch-API handler
-- More stores out of the box
+- More stores out of the box (Google Cloud Storage, Azure Blob)
 
 ## License
 
