@@ -244,9 +244,7 @@ export function createGitFs(
 			// and "pack/", so when any loose object exists it is the first key.
 			const first = objects[0]?.key;
 			const hint =
-				first !== undefined && LOOSE_OBJECT_RE.test(first)
-					? "present"
-					: "none";
+				first !== undefined && LOOSE_OBJECT_RE.test(first) ? "present" : "none";
 			looseHints.set(scope, hint);
 			onNote?.(`loose objects ${hint} under ${scope}`);
 		} catch {
