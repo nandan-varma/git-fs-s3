@@ -130,6 +130,39 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(await getCommitLog(repo, { ref: "ghost" })).toEqual([]);
 	});
 
+	it("throws instead of silently returning [] when the ref resolves but its commit object doesn't (storage inconsistency, not an empty repo)", async () => {
+		// "main" resolves fine — this is not the unborn-branch case above.
+		// Simulate the commit object itself being unreadable (a real-world
+		// example: a freshly pushed pack not yet visible to a LIST call this
+		// process just used to decide "nothing to prefetch").
+		const notFound = Object.assign(new Error("not found"), {
+			code: "NotFoundError",
+		});
+		const readCommitSpy = vi
+			.spyOn(git, "readCommit")
+			.mockRejectedValue(notFound);
+		try {
+			await expect(getTreeFromRef(repo, { ref: "main" })).rejects.toThrow(
+				GitObjectNotFoundError,
+			);
+		} finally {
+			readCommitSpy.mockRestore();
+		}
+
+		// getCommitLog's walk goes through git.log, not the readCommit spied on
+		// above (isomorphic-git's own commit-chain walker doesn't call back
+		// through the public API) — same fix, different isomorphic-git entry
+		// point to simulate the missing object at.
+		const logSpy = vi.spyOn(git, "log").mockRejectedValue(notFound);
+		try {
+			await expect(getCommitLog(repo, { ref: "main" })).rejects.toThrow(
+				GitObjectNotFoundError,
+			);
+		} finally {
+			logSpy.mockRestore();
+		}
+	});
+
 	it("walks and caches the commit log", async () => {
 		const resultCache = memoryResultCache();
 		const hooks = { resultCache };

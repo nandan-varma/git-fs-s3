@@ -52,10 +52,22 @@ export interface CommitInfo {
 	payload: string;
 }
 
-/** Resolve a branch name / full ref / sha to its commit. */
+/**
+ * Resolve a branch name / full ref / sha to its commit. The ref not
+ * resolving (unborn branch, genuinely empty repo) and the ref resolving but
+ * its commit object being unreadable (storage inconsistency — see
+ * `wrapMissingObject` above) are different failures with different meanings,
+ * so only the first is left as a raw isomorphic-git NotFoundError for
+ * callers to treat as "empty"; the second is wrapped into
+ * GitObjectNotFoundError specifically so it can't be mistaken for the first
+ * by an `isNotFound`-style check downstream (see getTreeFromRef/getCommitLog).
+ */
 export async function resolveCommit(repo: Repo, ref: string) {
 	const oid = await git.resolveRef({ ...repo, ref: qualifyBranchRef(ref) });
-	const result = await git.readCommit({ ...repo, oid });
+	const result = await wrapMissingObject(
+		git.readCommit({ ...repo, oid }),
+		`${repo.gitdir} commit ${oid}`,
+	);
 	return { oid, commit: result.commit };
 }
 
@@ -160,23 +172,29 @@ export async function getCommitLog(
 		await runStep(hooks, "prefetch", hooks.prefetch);
 	}
 
-	try {
-		const commits = await runStep(hooks, `git.log ${ref} depth=${depth}`, () =>
+	// headSha is already known-good here (resolveRef above succeeded, or the
+	// caller passed knownHeadSha) — a NotFoundError from the walk itself means
+	// a commit/tree/blob it needs is missing from storage, not that the ref
+	// doesn't exist. Unlike the resolveRef catch above, that's not "empty",
+	// it's storage inconsistency, so wrapMissingObject turns it into a
+	// GitObjectNotFoundError instead of silently returning [] — an empty
+	// result here would otherwise get treated as "this branch has no
+	// history" by every caller (and, worse, potentially cached as such).
+	const commits = await wrapMissingObject(
+		runStep(hooks, `git.log ${ref} depth=${depth}`, () =>
 			git.log({ ...repo, ref: headSha, depth }),
-		);
-		const result = commits.map((commit) => ({
-			oid: commit.oid,
-			commit: commit.commit,
-			payload: commit.payload || "",
-		}));
-		if (!cached || result.length > cached.length) {
-			hooks?.resultCache?.set(cacheKey, result);
-		}
-		return result;
-	} catch (err: unknown) {
-		if (isNotFound(err)) return [];
-		throw err;
+		),
+		`${repo.gitdir}@${ref} history`,
+	);
+	const result = commits.map((commit) => ({
+		oid: commit.oid,
+		commit: commit.commit,
+		payload: commit.payload || "",
+	}));
+	if (!cached || result.length > cached.length) {
+		hooks?.resultCache?.set(cacheKey, result);
 	}
+	return result;
 }
 
 /** A file at a ref, decoded for display: utf8 text or base64 when binary. */
