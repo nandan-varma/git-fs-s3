@@ -35,12 +35,15 @@ export interface OpsHooks {
 	/** Diagnostic sink for cache hit/miss and walk summaries. */
 	onNote?: (message: string) => void;
 	/**
-	 * Called once before history walks of depth >= `prefetchMinDepth` — wire
-	 * pack prefetching (e.g. `GitFs.prefetchPacks`) here so a sequential walk
-	 * doesn't pay one network round trip per commit.
+	 * Wire pack prefetching (e.g. `GitFs.prefetchPacks`) here so a sequential
+	 * walk doesn't pay one network round trip per commit. Called once before
+	 * history walks of depth >= `prefetchMinDepth` (see below), and
+	 * unconditionally on every cache-miss tree read ({@link getTreeFromRef}) —
+	 * a tree read has no shallow case, it always needs at least the head
+	 * commit's tree object.
 	 */
 	prefetch?: () => Promise<void>;
-	/** Minimum walk depth before `prefetch` fires. Default 5. */
+	/** Minimum walk depth before `prefetch` fires for history walks. Default 5. */
 	prefetchMinDepth?: number;
 }
 

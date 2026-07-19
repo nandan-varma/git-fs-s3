@@ -227,6 +227,19 @@ export async function getTreeFromRef(
 	}
 	hooks?.onNote?.(`getTreeFromRef: result-cache MISS for ${cacheKey}`);
 
+	// Unlike getCommitLog, a tree read has no "depth" to gate on — it always
+	// needs at least the head commit's tree object, and (for a non-root path)
+	// one object per path segment on top of that, so there's no shallow case
+	// where prefetching every pack is wasted bandwidth the way a depth=1
+	// commit-log walk can be. Without this, a cache-miss tree read falls
+	// through to isomorphic-git's own pack resolution, which probes indexed
+	// packs one at a time instead of warming them all in parallel up front —
+	// this was previously the slowest of a tree page's parallel queries in
+	// production for exactly that reason.
+	if (hooks?.prefetch) {
+		await runStep(hooks, "prefetch", hooks.prefetch);
+	}
+
 	const context = `${repo.gitdir}@${ref}:${treePath || "/"}`;
 	let result: TreeEntry[];
 	if (!treePath) {

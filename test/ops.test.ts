@@ -160,6 +160,20 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(prefetch).toHaveBeenCalledTimes(1);
 	});
 
+	it("fires the prefetch hook on every cache-miss tree read, no depth gate", async () => {
+		const prefetch = vi.fn().mockResolvedValue(undefined);
+		await getTreeFromRef(repo, { ref: "main" }, { prefetch });
+		expect(prefetch).toHaveBeenCalledTimes(1);
+
+		// A second read of the same ref/path hits the result cache and skips
+		// prefetch entirely — only cache misses need packs warmed.
+		const resultCache = memoryResultCache();
+		await getTreeFromRef(repo, { ref: "main" }, { prefetch, resultCache });
+		prefetch.mockClear();
+		await getTreeFromRef(repo, { ref: "main" }, { prefetch, resultCache });
+		expect(prefetch).not.toHaveBeenCalled();
+	});
+
 	it("resolves last commits per tree entry", async () => {
 		const last = await getLastCommitsForTree(repo, {
 			ref: "main",
