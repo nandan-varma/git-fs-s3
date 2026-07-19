@@ -8,7 +8,8 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 
 `createCachedStore` wraps any `ObjectStore` with an in-process LRU. Git
 objects are content-addressed, so a hit is always correct data forever —
-refs and other mutable paths expire on `ttlMs` instead.
+refs and other mutable paths need a much shorter TTL instead, via
+`ttlForKey` (below).
 
 <ApiSignature
 	name="createCachedStore"
@@ -30,10 +31,57 @@ refs and other mutable paths expire on `ttlMs` instead.
 | `maxBytes` | 50 MiB | Total cache budget. |
 | `maxEntryBytes` | `maxBytes / 10` | Largest single entry admitted — keeps one huge packfile from evicting the whole working set. |
 | `ttlMs` | 60 000 | Entry time-to-live. |
+| `ttlForKey` | — | Per-key/prefix TTL override — see below. |
 | `cacheMisses` | `false` | Also cache "not found" results. |
 | `cacheLists` | `false` | Also cache `list()` results (directory listings, existence probes). |
 | `coalesce` | `true` | Collapse concurrent identical requests into one backend call. |
 | `onHit` / `onMiss` | — | Instrumentation hooks, called with the key. |
+
+## `ttlForKey`
+
+`(key: string) => number | undefined` — called for every `get`/`head`
+admission and every `list()` result, keyed by the object's key (for
+`get`/`head`) or the listed prefix (for `list()`). Return a number to
+override `ttlMs` for that specific entry; return `undefined` to fall back
+to the default.
+
+A single `ttlMs` tuned for object reads is *right* for object reads — the
+whole point of content addressing is that a hit is correct forever — but it's
+*wrong* for the handful of keys in a gitdir that are mutable:
+
+- Refs (`refs/heads/<branch>`, `HEAD`) — the same key's value changes on
+  every push.
+- Directory listings under `objects/` (particularly `objects/pack/`) — the
+  *set* of packs grows on every push, even though no individual pack's
+  bytes ever change.
+
+<Aside type="danger">
+	This cache is in-process with no cross-instance invalidation broadcast —
+	`invalidate()` only clears the instance that calls it (typically the one
+	that just handled a push). A *different* warm instance that had already
+	cached a ref, or a pack directory's listing, keeps serving that pre-push
+	view for the rest of `ttlMs` — not because anything is wrong with its own
+	invalidation logic, but because it was never told to re-check. For a pack
+	listing specifically, this doesn't just mean a stale ref: it means a
+	prefetch/pack-lookup pass can fail to discover a freshly pushed pack
+	exists *at all*, and misreport its objects as missing from storage rather
+	than simply not-yet-listed.
+</Aside>
+
+A ref is one small object and a pack listing is one bounded `list()` call,
+so re-checking either far more often than `ttlMs` costs little. Everything
+*downstream* of a fresh ref or listing — the tree, commit, and blob reads
+keyed by the sha it resolves to, or the specific pack name a fresh listing
+named — still gets the full `ttlMs` cache benefit once the structure itself
+is current:
+
+```typescript
+const cached = createCachedStore(store, {
+  ttlMs: 3_600_000, // 1h — safe for object reads
+  ttlForKey: (key) =>
+    /\/(HEAD|refs(\/|$)|objects\/(pack\/)?$)/.test(key) ? 5_000 : undefined,
+});
+```
 
 ## `cacheMisses`
 

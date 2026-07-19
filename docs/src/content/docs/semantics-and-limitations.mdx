@@ -27,6 +27,31 @@ possible on top of that — see
 symlinks as data (they're stored as blobs with a special mode, not real
 filesystem symlinks), so this is a non-issue in practice.
 
+## An empty repo and missing data are different failures
+
+Functions that read a ref (`getTreeFromRef`, `getCommitLog`, `listBranches`,
+...) treat the ref simply not resolving — an unborn branch, a genuinely
+empty repository — as a normal, expected condition: they return `[]` (or
+`null`), not an error. That's the *only* case they treat that way.
+
+Once a ref has resolved to a real commit sha, any object underneath it that
+turns out to be unreadable — the commit itself, a tree, a blob a stored
+pack doesn't actually contain — is a **different** failure: the repo's
+storage is inconsistent, not empty. That's surfaced as a thrown
+`GitObjectNotFoundError` (message: "...is missing from storage. The
+repository may need to be re-pushed to repair it."), not folded into the
+same `[]` a genuinely empty repo returns.
+
+<Aside type="caution">
+	If you're wrapping one of these functions yourself, don't catch *every*
+	`NotFoundError`-shaped error and treat it as "empty" — only do that around
+	the ref-resolution step. A commit/tree/blob read failing after the ref
+	already resolved is exactly the class of bug this distinction exists to
+	catch: silently reporting real data as absent (and, worse, letting a
+	caller cache that wrong "empty" result) is far more confusing to debug
+	than a clear, correctly-typed error.
+</Aside>
+
 ## No rename, no multi-key transactions
 
 Object storage has neither. A caller that needs several keys to become

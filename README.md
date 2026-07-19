@@ -109,6 +109,13 @@ const store = createCachedStore(
     ttlMs: 3_600_000,
     cacheMisses: true, // loose-object probes on packed repos are ~always misses
     cacheLists: true,  // caches readdir + existence probes
+    // refs and the objects/pack listing are the mutable parts of a gitdir —
+    // give them a short override instead of the long ttlMs above, or a warm
+    // process can keep serving a pre-push ref (or fail to notice a freshly
+    // pushed pack exists at all) for the rest of ttlMs. Cheap: both are one
+    // small object or a bounded listing.
+    ttlForKey: (key) =>
+      /\/(HEAD|refs(\/|$)|objects\/(pack\/)?$)/.test(key) ? 5_000 : undefined,
   },
 );
 
@@ -155,10 +162,11 @@ In-memory store; also the reference implementation of list/delimiter semantics.
 
 ### `createCachedStore(store, options?)`
 
-Wraps any store with an in-process LRU read cache (git objects are content-addressed, so they cache perfectly; refs expire on `ttlMs`). Returns a `CachedObjectStore` with an `invalidate(prefix)` method.
+Wraps any store with an in-process LRU read cache (git objects are content-addressed, so they cache perfectly; refs and directory listings are mutable and should use a shorter override — see `ttlForKey`). Returns a `CachedObjectStore` with an `invalidate(prefix)` method.
 
 - `maxBytes` — cache budget, default 50 MiB. `maxEntryBytes` — largest admissible entry, default a tenth of `maxBytes`, so one huge pack can't evict the working set.
 - `ttlMs` — entry TTL, default 60 s
+- `ttlForKey(key)` — per-key/prefix TTL override in ms (applies to `get`/`head`/`list`); return `undefined` to fall back to `ttlMs`. A single long `ttlMs` is right for content-addressed object keys (the same key's bytes never change) but wrong for mutable ones — a ref's value moves on every push, and a directory listing (`objects/pack/`) grows on every push, while the *key* naming them stays the same. This cache is in-process with no cross-instance invalidation, so without an override a warm instance that already cached a ref, or a pack directory's listing, can keep serving that pre-push view for the rest of `ttlMs` even though nothing is wrong with its own invalidation logic — it just never re-checked. See the [caching guide](https://nandan-varma.github.io/git-fs-s3/guides/caching/) for the full reasoning.
 - `cacheMisses` — also cache "not found" results. Big win for loose-object probes on packed repos; only safe when this process is the sole writer.
 - `cacheLists` — also cache `list()` results (readdir + existence probes). Writes through the store keep listings consistent, with one deliberate asymmetry: a non-empty `limit: 1` probe ("this directory exists") survives writes underneath it, since a write can't make a directory stop existing. After external writes, call `invalidate(prefix)`.
 - `coalesce` — collapse concurrent `get`/`head`/`list` calls for the same key into one backend request. Default on.

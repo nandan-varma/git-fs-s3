@@ -51,6 +51,30 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 	caller expects.
 </ApiSignature>
 
+<ApiSignature
+	name="getTreeFromRef"
+	signature="getTreeFromRef(repo: Repo, options?: { ref?, treePath? }, hooks?: OpsHooks): Promise<TreeEntry[]>"
+	params={[
+		{ name: 'options.ref', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'options.treePath', type: 'string', description: 'Defaults to the repo root.', optional: true },
+	]}
+	returns="Promise<TreeEntry[]>"
+>
+	A directory listing at a ref's tip — resolves the ref to a commit, then
+	`treePath` inside that commit's tree. Results are memoized per resolved
+	head sha, same pattern as `getCommitLog` below.
+</ApiSignature>
+
+<Aside type="tip">
+	On every cache miss, `getTreeFromRef` unconditionally calls
+	`hooks.prefetch` if provided — unlike `getCommitLog`'s depth-gated
+	prefetch (below), a tree read has no shallow case to skip it for: it
+	always needs at least the head commit's tree object, and one more per
+	path segment on top of that. Wire pack prefetching (`GitFs.prefetchPacks`)
+	through `hooks.prefetch` so a cache-miss tree read doesn't fall through to
+	isomorphic-git probing indexed packs one at a time.
+</Aside>
+
 ## History: `getCommitLog`
 
 <ApiSignature
@@ -68,7 +92,10 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 	]}
 	returns="Promise<CommitInfo[]>"
 >
-	The commit chain from a ref, newest first.
+	The commit chain from a ref, newest first. `ref` not resolving (empty
+	repo, unborn branch) returns `[]`; a commit the walk needs but can't read
+	*after* `ref` already resolved throws instead — see
+	[empty repo vs. missing data](/git-fs-s3/semantics-and-limitations/#an-empty-repo-and-missing-data-are-different-failures).
 </ApiSignature>
 
 <Aside type="danger" title="The one pattern worth internalizing from this whole package">
