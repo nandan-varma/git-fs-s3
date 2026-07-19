@@ -1,0 +1,118 @@
+---
+title: App-layer operations overview
+description: The higher-level git-hosting operations layer built on createGitFs, and the OpsHooks seam every function shares.
+---
+
+import { Aside, CardGrid, Card } from '@astrojs/starlight/components';
+
+`@nandan-varma/git-fs-s3/ops` is the layer a repo browser, a PR flow, or a
+CMS admin UI actually needs — branches, commit writing, tree read/write,
+commit history, file history, diffs, and merge — built entirely on the root
+package's `createGitFs`. Extracted from a production git-hosting service's
+own application layer.
+
+<CardGrid>
+	<Card title="Branches" icon="random">
+		`listBranches`, `createBranchFrom`, `deleteBranchByName`,
+		`assertBranchExists`. See
+		[Branches & commits](/git-fs-s3/ops/branches-and-commits/).
+	</Card>
+	<Card title="Commits" icon="pencil">
+		`commitFilesToBare`, `deleteFileFromBare`, `writeCommitToBare`,
+		`authorNow`. See
+		[Branches & commits](/git-fs-s3/ops/branches-and-commits/).
+	</Card>
+	<Card title="Trees, history & diff" icon="document">
+		Tree primitives, cached commit-log walks, file history, diffs. See
+		[Trees, history & diff](/git-fs-s3/ops/trees-history-and-diff/).
+	</Card>
+	<Card title="Merge" icon="puzzle">
+		Fast-forward and pre-merge analysis. See
+		[Merge](/git-fs-s3/ops/merge/).
+	</Card>
+</CardGrid>
+
+## `OpsHooks`: the shared seam
+
+Every function in this module accepts an optional `hooks: OpsHooks` as its
+last argument:
+
+```typescript
+interface OpsHooks {
+  resultCache?: ResultCache;
+  /** Wrap a timed sub-step (network walk, tree listing). Default: run directly. */
+  step?<T>(label: string, fn: () => Promise<T>): Promise<T>;
+  /** Diagnostic sink for cache hit/miss and walk summaries. */
+  onNote?(message: string): void;
+  /**
+   * Called once before history walks of depth >= prefetchMinDepth — wire
+   * pack prefetching (e.g. GitFs.prefetchPacks) here.
+   */
+  prefetch?(): Promise<void>;
+  /** Minimum walk depth before `prefetch` fires. Default 5. */
+  prefetchMinDepth?: number;
+}
+```
+
+A typical wiring, reused across every call:
+
+```typescript
+const hooks: OpsHooks = {
+  resultCache: myAppResultCache, // see ResultCache below
+  step: perfStep,
+  onNote: (msg) => console.debug(msg),
+  prefetch: () => (repo.fs as GitFs).prefetchPacks(repo.gitdir),
+  prefetchMinDepth: 5,
+};
+```
+
+## `ResultCache`
+
+Several functions in this module — `getCommitLog`, `getTreeFromRef`,
+`getCommitHistory`, `getLastCommitsForTree`, `getFileHistory` — memoize
+expensive walk results (a commit log, a tree listing) so repeated or
+overlapping requests don't re-walk from scratch:
+
+```typescript
+interface ResultCache {
+  get<T>(key: string): T | null | undefined;
+  set(key: string, value: unknown): void;
+}
+```
+
+Keys are namespaced `<kind>:<gitdir>:...`, so entries self-invalidate on a
+new push (a new head sha means a new key) — but you still need to evict
+entries under [`resultKeyPrefixes(gitdir)`](/git-fs-s3/reference/ops/#resultkeyprefixes)
+after rewriting a repo's storage *out of band* (a bulk sync, a rename), or a
+stale walk outlives the history it describes.
+
+<Aside type="danger" title="Get the cache key namespace right">
+	These keys are namespaced by `gitdir`, not by any app-level identifier you
+	might otherwise use (an owner/repo pair, a database ID). If your own
+	invalidation logic uses a *different* prefix scheme than
+	`resultKeyPrefixes(gitdir)` produces, invalidation silently does nothing
+	— the prefixes never match, and stale results linger past the point they
+	should have been evicted. Always derive invalidation prefixes from
+	`resultKeyPrefixes`, never hand-roll them.
+</Aside>
+
+Any object satisfying the two-method interface works — an LRU, a `Map`, a
+Redis client wrapper. `get`/`set` are called with plain values (arrays,
+objects); the store owns how it actually keeps them.
+
+## `Repo`
+
+Every function takes a `Repo` as its first argument — the same shape
+`createGitFs` produces:
+
+```typescript
+interface Repo {
+  fs: IsoGitFs;
+  gitdir: string;
+  cache?: object; // isomorphic-git's own shared parse cache — recommended per repo
+}
+```
+
+Create one per request and reuse it across every `/ops` call in that
+request — sharing `cache` is what lets isomorphic-git reuse parsed pack
+indexes instead of re-parsing them on every call.

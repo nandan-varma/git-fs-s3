@@ -1,0 +1,70 @@
+---
+title: Reference — /s3
+description: S3ObjectStore, the ObjectStore implementation over @aws-sdk/client-s3.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+import RuntimeSupport from '../../../components/RuntimeSupport.astro';
+
+```typescript
+import { S3ObjectStore } from '@nandan-varma/git-fs-s3/s3';
+```
+
+<RuntimeSupport
+	runtimes={[
+		{ name: 'Node.js', supported: true },
+		{ name: 'Cloudflare Workers', supported: true, note: '@aws-sdk/client-s3 works against R2 from Workers too, with the right client config.' },
+		{ name: 'Deno', supported: true },
+		{ name: 'Browser', supported: false, note: 'Ships credentials-bearing S3 calls — not meant to run client-side.' },
+	]}
+/>
+
+<ApiSignature
+	name="S3ObjectStore"
+	kind="class"
+	signature="new S3ObjectStore(options: S3ObjectStoreOptions)"
+	params={[
+		{ name: 'options.client', type: 'S3Client', description: 'A configured client — works with AWS S3, Cloudflare R2, MinIO, Backblaze B2.' },
+		{ name: 'options.bucket', type: 'string', description: '' },
+		{ name: 'options.prefix', type: 'string', description: 'Key prefix for every object.', optional: true },
+		{
+			name: 'options.contentType',
+			type: '(key: string) => string | undefined',
+			description: 'Derives a Content-Type for uploads. Cosmetic only — git never reads it back.',
+			optional: true,
+		},
+	]}
+>
+	Implements `ObjectStore` (see [the guide](/git-fs-s3/guides/object-store/))
+	over any S3-compatible API.
+</ApiSignature>
+
+```typescript
+import { S3Client } from '@aws-sdk/client-s3';
+import { S3ObjectStore } from '@nandan-varma/git-fs-s3/s3';
+
+const store = new S3ObjectStore({
+  client: new S3Client({
+    region: 'auto',
+    endpoint: process.env.R2_ENDPOINT, // omit for AWS S3
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+    },
+  }),
+  bucket: 'my-git-repos',
+  contentType: (key) =>
+    /\/(HEAD|config)$|\/refs\//.test(key) ? 'text/plain' : undefined,
+});
+```
+
+<Aside type="tip">
+	One instance per bucket/prefix — but reuse a single `S3Client` across
+	every store you create. A busy repo page can mean hundreds of object
+	reads; a shared client pools HTTP connections instead of reconnecting
+	per store.
+</Aside>
+
+`@aws-sdk/client-s3` is an optional peer dependency, loaded only when you
+import this subpath — the root package and `/http`/`/ops` never pull it in.

@@ -1,0 +1,70 @@
+---
+title: Retry & circuit breaker
+description: createRetryStore's exponential backoff and per-instance circuit breaker.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+`createRetryStore` wraps any `ObjectStore` with exponential-backoff retries
+and a circuit breaker. Place it directly above the network store, under the
+cache — see [the production stack guide](/git-fs-s3/guides/production-stack/)
+for why that order matters.
+
+<ApiSignature
+	name="createRetryStore"
+	signature="createRetryStore(store: ObjectStore, options?: RetryOptions): ObjectStore"
+	params={[
+		{ name: 'store', type: 'ObjectStore', description: 'The store to wrap.' },
+		{ name: 'options', type: 'RetryOptions', description: 'See below.', optional: true },
+	]}
+/>
+
+## Backoff options
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `retries` | 3 | Attempts after the first (total attempts = `retries + 1`). |
+| `initialDelayMs` | 100 | Base delay, doubled every attempt. |
+| `maxDelayMs` | 5000 | Upper bound on the backoff delay. |
+| `jitter` | 0.3 | Random jitter added to each delay, as a fraction of it. |
+| `isRetryable` | see below | Decide whether an error is worth retrying. |
+
+The store contract already maps "not found" to `null` rather than throwing
+(see [the ObjectStore guide](/git-fs-s3/guides/object-store/)) — so any
+thrown error here is a genuine failure. The default `isRetryable` retries
+network faults, throttling, and HTTP 5xx/429 responses; anything else
+(a 4xx that isn't throttling, a programming error) fails immediately.
+
+## The circuit breaker
+
+```typescript
+createRetryStore(store, {
+  breaker: { threshold: 5, resetMs: 30_000 }, // defaults shown
+});
+```
+
+After `threshold` consecutive failures, the store stops even trying — every
+call fails fast with `CircuitOpenError` (`code: "EUNAVAILABLE"`) for
+`resetMs`, then lets exactly one request through to probe whether the
+backend has recovered.
+
+<Aside type="tip">
+	Fail-fast during an outage matters as much as retrying during a blip —
+	without a breaker, a downed backend means every single request in flight
+	pays the full retry+backoff cost before failing, which can turn a backend
+	outage into a self-inflicted request pile-up.
+</Aside>
+
+Set `breaker: false` to disable it entirely.
+
+## Observability
+
+```typescript
+createRetryStore(store, {
+  onRetry: (info) => console.warn('retrying', info),
+});
+```
+
+`onRetry` fires on every retry attempt — wire it into your existing logging/
+metrics pipeline rather than debugging retries blind.

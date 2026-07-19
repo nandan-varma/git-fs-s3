@@ -1,0 +1,140 @@
+---
+title: The ObjectStore interface
+description: The five-method contract every storage backend implements, and how to write your own.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+Everything in git-fs-s3 is built on one small interface. `createGitFs` doesn't
+know or care whether the bytes underneath come from R2, S3, memory, or
+something else entirely — it only calls these five methods.
+
+```typescript
+interface ObjectStore {
+  get(key: string): Promise<Uint8Array | null>;
+  put(key: string, data: Uint8Array): Promise<void>;
+  delete(key: string): Promise<void>;
+  head(key: string): Promise<ObjectStat | null>;
+  list(prefix: string, options?: ListOptions): Promise<ListResult>;
+}
+```
+
+<Aside type="tip">
+	A missing key is `null`, never a thrown error. Every layer in the stack —
+	the git-aware fs, the cache, the retry store — relies on that to
+	distinguish "doesn't exist" from "the backend failed."
+</Aside>
+
+## Method contracts
+
+<ApiSignature
+	name="get"
+	signature="get(key: string): Promise<Uint8Array | null>"
+	params={[{ name: 'key', type: 'string', description: 'The full object key.' }]}
+	returns="Uint8Array | null"
+>
+	The object's bytes, or `null` if the key doesn't exist. Never throws for a
+	missing key.
+</ApiSignature>
+
+<ApiSignature
+	name="put"
+	signature="put(key: string, data: Uint8Array): Promise<void>"
+	params={[
+		{ name: 'key', type: 'string', description: 'The full object key.' },
+		{ name: 'data', type: 'Uint8Array', description: 'The bytes to store.' },
+	]}
+>
+	Writes (or overwrites) an object. Object storage has no atomic
+	multi-key transactions — a caller that needs several keys to become
+	visible together needs its own coordination (see
+	[Semantics & limitations](/git-fs-s3/semantics-and-limitations/)).
+</ApiSignature>
+
+<ApiSignature
+	name="delete"
+	signature="delete(key: string): Promise<void>"
+	params={[{ name: 'key', type: 'string', description: 'The full object key.' }]}
+>
+	Removes an object. Deleting a key that doesn't exist is not an error.
+</ApiSignature>
+
+<ApiSignature
+	name="head"
+	signature="head(key: string): Promise<ObjectStat | null>"
+	params={[{ name: 'key', type: 'string', description: 'The full object key.' }]}
+	returns="ObjectStat | null"
+>
+	Existence + size, without transferring the object body — `{ size: number }`,
+	or `null` if the key doesn't exist.
+</ApiSignature>
+
+<ApiSignature
+	name="list"
+	signature="list(prefix: string, options?: ListOptions): Promise<ListResult>"
+	params={[
+		{ name: 'prefix', type: 'string', description: 'Only keys starting with this prefix.' },
+		{
+			name: 'options',
+			type: 'ListOptions',
+			description: '<code>delimiter</code> (directory-style grouping) and <code>limit</code>.',
+			optional: true,
+		},
+	]}
+	returns="ListResult"
+>
+	`{ objects: { key, size }[], prefixes: string[] }`. When `options.delimiter`
+	is set (git-fs-s3 always uses `"/"`), keys are grouped: anything after the
+	first delimiter past `prefix` collapses into one entry in `prefixes`
+	instead of appearing in `objects` — this is what makes `readdir()` work
+	against storage that has no real directories.
+</ApiSignature>
+
+## Writing your own store
+
+Implement the interface above for any backend and pass it straight to
+`createGitFs` — every other piece (caching, retry, the git-aware layer,
+`/http`, `/ops`) works unmodified on top of it.
+
+`MemoryObjectStore` (exported from the root package) is the reference
+implementation — read it first. It's also the store used throughout this
+package's own test suite, and the one you'll reach for in yours:
+
+```typescript
+import { createGitFs, MemoryObjectStore } from '@nandan-varma/git-fs-s3';
+
+const fs = createGitFs(new MemoryObjectStore());
+```
+
+<Aside type="caution">
+	Get `list()`'s delimiter semantics right or nothing above it works —
+	isomorphic-git calls `readdir()` constantly, and `readdir()` is built
+	entirely on `list(prefix, { delimiter: '/' })`. Compare your
+	implementation's behavior against `MemoryObjectStore`'s for the same
+	inputs before trusting it.
+</Aside>
+
+## `S3ObjectStore`
+
+The one storage backend shipped out of the box, over `@aws-sdk/client-s3`
+(an optional peer dependency, loaded only via the `/s3` subpath so
+consumers who don't need it don't pay for it).
+
+```typescript
+import { S3ObjectStore } from '@nandan-varma/git-fs-s3/s3';
+
+const store = new S3ObjectStore({
+  client, // reuse one S3Client — see the note below
+  bucket: 'my-git-repos',
+  prefix: 'repos/', // optional: a fixed prefix under every key
+  contentType: (key) =>
+    /\/(HEAD|config)$|\/refs\//.test(key) ? 'text/plain' : undefined,
+});
+```
+
+<Aside type="note">
+	Reuse one `S3Client` across every store you create — a busy repo page can
+	mean hundreds of object reads, and a shared client pools HTTP
+	connections instead of reconnecting per store.
+</Aside>

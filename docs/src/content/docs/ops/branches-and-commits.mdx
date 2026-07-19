@@ -1,0 +1,144 @@
+---
+title: Branches & commits
+description: listBranches, createBranchFrom, deleteBranchByName, commitFilesToBare, deleteFileFromBare, and writeCommitToBare.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+## Branches
+
+<ApiSignature
+	name="listBranches"
+	signature="listBranches(repo: Repo): Promise<Branch[]>"
+	returns="Promise<Branch[]>"
+>
+	Every branch with its tip commit — `{ name, commit, isDefault }[]`. `[]`
+	for an empty repository, not an error.
+</ApiSignature>
+
+<ApiSignature
+	name="createBranchFrom"
+	signature="createBranchFrom(repo: Repo, name: string, startPoint?: string): Promise<void>"
+	params={[
+		{ name: 'name', type: 'string', description: 'The new branch name.' },
+		{ name: 'startPoint', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+	]}
+>
+	Creates `name` pointing at the tip of `startPoint`. No checkout — this
+	package targets bare repositories.
+</ApiSignature>
+
+<ApiSignature
+	name="deleteBranchByName"
+	signature="deleteBranchByName(repo: Repo, name: string): Promise<void>"
+	params={[{ name: 'name', type: 'string', description: 'The branch to delete.' }]}
+>
+	Validated internally — `git.deleteBranch` has no built-in ref-format
+	check the way `git.branch` does, so this validates `name` before it ever
+	reaches isomorphic-git.
+</ApiSignature>
+
+<ApiSignature
+	name="assertBranchExists"
+	signature="assertBranchExists(repo: Repo, name: string): Promise<void>"
+	params={[{ name: 'name', type: 'string', description: 'The branch to check.' }]}
+>
+	Throws (isomorphic-git's `NotFoundError`) unless the branch resolves.
+	Useful as a cheap existence guard before a more expensive operation.
+</ApiSignature>
+
+<Aside type="danger">
+	Every function above validates its branch-name argument with the same
+	guard `git.branch`/`git.writeRef` use internally — `git.deleteBranch` and
+	raw `resolveRef`/`writeRef` calls don't validate ref names themselves.
+	This is handled for you; you don't need to pre-validate before calling
+	these.
+</Aside>
+
+## Commits
+
+`authorNow` builds a `CommitAuthor` stamped with the current time —
+the shape every commit-writing function below expects:
+
+```typescript
+interface CommitAuthor {
+  name: string;
+  email: string;
+  timestamp: number;
+  timezoneOffset: number;
+}
+
+const author = authorNow('Ada', 'ada@example.com');
+```
+
+<ApiSignature
+	name="commitFilesToBare"
+	signature="commitFilesToBare(repo: Repo, options: { branch, message, author, files }): Promise<string>"
+	params={[
+		{ name: 'branch', type: 'string', description: 'The branch to commit onto (created if it doesn\'t exist).' },
+		{ name: 'message', type: 'string', description: 'Commit message.' },
+		{ name: 'author', type: 'CommitAuthor', description: 'From <code>authorNow</code> or your own.' },
+		{
+			name: 'files',
+			type: 'Array<{ path, content }>',
+			description: '<code>content</code> is <code>string | Uint8Array</code>.',
+		},
+	]}
+	returns="Promise<string>"
+>
+	Writes a commit directly to the bare repo — no worktree, no checkout.
+	Each blob is content-addressed and independent of the others, so all
+	files in the batch are written in parallel.
+</ApiSignature>
+
+<ApiSignature
+	name="deleteFileFromBare"
+	signature="deleteFileFromBare(repo: Repo, options: { branch, filePath, message, author }): Promise<string>"
+	params={[
+		{ name: 'branch', type: 'string', description: 'The branch to commit onto.' },
+		{ name: 'filePath', type: 'string', description: 'The path to remove.' },
+		{ name: 'message', type: 'string', description: 'Commit message.' },
+		{ name: 'author', type: 'CommitAuthor', description: '' },
+	]}
+	returns="Promise<string>"
+>
+	Commits the removal of one file. Throws if the branch is empty (nothing
+	to remove).
+</ApiSignature>
+
+<ApiSignature
+	name="writeCommitToBare"
+	signature="writeCommitToBare(repo: Repo, options: { branch, message, author, buildTree }): Promise<string>"
+	params={[
+		{ name: 'branch', type: 'string', description: 'The branch to commit onto.' },
+		{ name: 'message', type: 'string', description: 'Commit message.' },
+		{ name: 'author', type: 'CommitAuthor', description: '' },
+		{
+			name: 'buildTree',
+			type: '(parentTreeOid?: string) => Promise<string>',
+			description: 'Receives the parent tree oid (undefined for an empty repo), returns the new root tree oid.',
+		},
+	]}
+	returns="Promise<string>"
+>
+	The primitive `commitFilesToBare`/`deleteFileFromBare` are built on —
+	reach for it directly when neither fits (a multi-step tree rewrite, a
+	merge commit with a synthetic tree). Handles the parent-resolution,
+	commit-object, and ref-update mechanics; you own tree construction via
+	`buildTree`.
+</ApiSignature>
+
+<Aside type="tip">
+	`writeCommitToBare` resolves the branch's current tip to determine the
+	parent tree. A missing branch (an empty repo, an unborn branch) isn't
+	treated as an error — `buildTree` is called with `undefined`, meaning
+	"start from an empty tree." Any *other* failure (a storage error, a
+	corrupted object) propagates instead of being silently treated as "empty
+	repo" — this distinction matters and is worth relying on if you're
+	handling errors from these functions yourself.
+</Aside>
+
+Serialize concurrent writers to the same repo externally (a per-repo lock)
+— the resolve-parent → write-commit → update-ref sequence is not atomic on
+object storage.

@@ -1,0 +1,79 @@
+---
+title: Caching
+description: createCachedStore's in-process LRU read cache — options, staleness guarantees, and when to reach for each.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+`createCachedStore` wraps any `ObjectStore` with an in-process LRU. Git
+objects are content-addressed, so a hit is always correct data forever —
+refs and other mutable paths expire on `ttlMs` instead.
+
+<ApiSignature
+	name="createCachedStore"
+	signature="createCachedStore(store: ObjectStore, options?: CacheOptions): CachedObjectStore"
+	params={[
+		{ name: 'store', type: 'ObjectStore', description: 'The store to wrap.' },
+		{ name: 'options', type: 'CacheOptions', description: 'See below.', optional: true },
+	]}
+	returns="CachedObjectStore"
+>
+	A `CachedObjectStore` is a normal `ObjectStore` plus one extra method:
+	`invalidate(prefix)`.
+</ApiSignature>
+
+## Options
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `maxBytes` | 50 MiB | Total cache budget. |
+| `maxEntryBytes` | `maxBytes / 10` | Largest single entry admitted — keeps one huge packfile from evicting the whole working set. |
+| `ttlMs` | 60 000 | Entry time-to-live. |
+| `cacheMisses` | `false` | Also cache "not found" results. |
+| `cacheLists` | `false` | Also cache `list()` results (directory listings, existence probes). |
+| `coalesce` | `true` | Collapse concurrent identical requests into one backend call. |
+| `onHit` / `onMiss` | — | Instrumentation hooks, called with the key. |
+
+## `cacheMisses`
+
+Loose-object probes on a packed repository are *always* misses — every one
+of them is otherwise a wasted round trip on every single request. Turning
+this on is close to free performance, with one condition:
+
+<Aside type="caution">
+	Only safe when this process is the sole writer to the backend. If another
+	process (or another instance) writes a key this process just cached as
+	"missing," that write is invisible here until `ttlMs` expires or someone
+	calls `invalidate()`.
+</Aside>
+
+## `cacheLists`
+
+Caches `list()` results — which backs both `readdir()` and existence
+probes. Writes made *through this same cached store* keep listings
+consistent automatically. There's one deliberate asymmetry worth knowing:
+
+A non-empty `limit: 1` probe (the shape of "does this directory have
+anything in it") survives writes underneath it — a write can add entries to
+a directory, but it can't make a directory that already has something in it
+stop existing, so that specific cached answer stays valid regardless.
+
+After a write that happens *outside* this cached store (another process, a
+bulk sync), call `invalidate(prefix)` — see
+[the production stack guide](/git-fs-s3/guides/production-stack/#invalidation).
+
+## `coalesce`
+
+Multiple concurrent callers requesting the same key collapse into one
+backend request, sharing the result. On by default — a page render that
+fans out N requests for the same object (e.g. N callers all resolving the
+same ref) pays for one network round trip, not N.
+
+## The staleness contract, plainly
+
+`cacheMisses` and `cacheLists` trade read traffic for a window — bounded by
+`ttlMs` — in which another process's writes are invisible here. This is
+fine in exactly two situations: each repo is served by one process at a
+time, or every external write path calls `invalidate()`. Outside those two,
+don't turn them on.

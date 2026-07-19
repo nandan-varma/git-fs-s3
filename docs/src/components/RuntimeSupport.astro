@@ -1,0 +1,49 @@
+---
+/**
+ * A compact badge row declaring which runtimes an API actually works on —
+ * used wherever a module's edge-compatibility differs from the package's
+ * baseline (e.g. the S3ObjectStore's AWS SDK dependency is Node-only, while
+ * /http and /ops are plain Web APIs and run anywhere).
+ */
+import { Badge } from '@astrojs/starlight/components';
+
+interface Runtime {
+	name: string;
+	supported: boolean;
+	/** Shown as a title tooltip on the badge — keep it to one short clause. */
+	note?: string;
+}
+
+interface Props {
+	runtimes: Runtime[];
+}
+
+const { runtimes } = Astro.props;
+---
+
+<p class="runtime-support">
+	{
+		runtimes.map((runtime) => (
+			<span class="runtime-badge" title={runtime.note}>
+				<Badge
+					text={runtime.name}
+					variant={runtime.supported ? 'success' : 'caution'}
+					size="medium"
+				/>
+			</span>
+		))
+	}
+</p>
+
+<style>
+	.runtime-support {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		align-items: center;
+		margin: 1rem 0;
+	}
+	.runtime-badge {
+		cursor: default;
+	}
+</style>

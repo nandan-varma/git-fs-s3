@@ -1,0 +1,43 @@
+---
+title: Semantics & limitations
+description: What this package assumes about your repos, and what it deliberately doesn't do.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Bare repositories are the target
+
+Plumbing — `writeBlob`/`writeTree`/`writeCommit`/`readCommit`/`log`/refs/
+branches — is covered by the test suite and is what this whole package is
+built around. Worktree operations (`checkout`, `add`, `status`) want a real
+disk; if you need them, hydrate to a scratch directory (e.g. `/tmp` on a
+platform that offers one per invocation) and use `node:fs` there instead.
+
+## Directories are implicit
+
+There's no `mkdir` equivalent to call — `mkdir` is a no-op, and a directory
+"exists" exactly when keys live under it, the same way object storage
+itself works. `list()`'s delimiter semantics are what make `readdir()`
+possible on top of that — see
+[the ObjectStore guide](/git-fs-s3/guides/object-store/).
+
+## Symlinks are unsupported
+
+`readlink` → `ENOENT`, `symlink` → `EPERM`. Bare repositories don't contain
+symlinks as data (they're stored as blobs with a special mode, not real
+filesystem symlinks), so this is a non-issue in practice.
+
+## No rename, no multi-key transactions
+
+Object storage has neither. A caller that needs several keys to become
+visible together (or an atomic move) needs its own coordination layer on
+top — this package doesn't pretend otherwise.
+
+<Aside type="danger">
+	Concurrent pushes to the same repo need external serialization — a
+	per-repo lock or a single-writer queue. Nothing in this package
+	serializes writes for you; `/http`'s `applyReceivePack` does
+	compare-and-swap ref updates (so a stale push is rejected rather than
+	silently overwriting concurrent work), but that's a correctness guard,
+	not a substitute for locking during the pack-write itself.
+</Aside>

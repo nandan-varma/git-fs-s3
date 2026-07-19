@@ -1,0 +1,146 @@
+---
+/**
+ * A consistent function/class/const signature block for reference pages —
+ * name + kind badge, a plain-monospace signature line (full syntax-
+ * highlighted examples belong in fenced code blocks elsewhere; this is a
+ * quick-scan header), a params table, and a return-type line.
+ */
+import { Badge } from '@astrojs/starlight/components';
+
+interface Param {
+	name: string;
+	type: string;
+	description: string;
+	optional?: boolean;
+}
+
+interface Props {
+	name: string;
+	kind?: 'function' | 'class' | 'const' | 'type' | 'interface';
+	/** The signature as plain text, e.g. `createGitFs(store, options?): GitFs`. */
+	signature: string;
+	params?: Param[];
+	returns?: string;
+}
+
+const { name, kind = 'function', signature, params = [], returns } = Astro.props;
+---
+
+<div class="api-signature" id={name}>
+	<div class="api-signature-header">
+		<Badge text={kind} variant="note" size="small" />
+		<a href={`#${name}`} class="api-signature-name">
+			<code>{name}</code>
+		</a>
+	</div>
+	<pre class="api-signature-code"><code>{signature}</code></pre>
+	{
+		params.length > 0 && (
+			<table class="api-signature-params">
+				<thead>
+					<tr>
+						<th>Parameter</th>
+						<th>Type</th>
+						<th>Description</th>
+					</tr>
+				</thead>
+				<tbody>
+					{params.map((param) => (
+						<tr>
+							<td>
+								<code>
+									{param.name}
+									{param.optional ? '?' : ''}
+								</code>
+							</td>
+							<td>
+								<code>{param.type}</code>
+							</td>
+							<td set:html={param.description} />
+						</tr>
+					))}
+				</tbody>
+			</table>
+		)
+	}
+	{
+		returns && (
+			<p class="api-signature-returns">
+				<strong>Returns:</strong> <code>{returns}</code>
+			</p>
+		)
+	}
+	<div class="api-signature-body">
+		<slot />
+	</div>
+</div>
+
+<style>
+	.api-signature {
+		margin: 1.5rem 0 2rem;
+		padding: 1rem 1.25rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-left: 3px solid var(--sl-color-accent);
+		border-radius: 0.25rem;
+		background-color: var(--sl-color-gray-7, var(--sl-color-black));
+		scroll-margin-top: 4rem;
+	}
+	.api-signature-header {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		margin-bottom: 0.5rem;
+	}
+	.api-signature-name {
+		text-decoration: none;
+	}
+	.api-signature-name code {
+		font-size: var(--sl-text-h4);
+		font-weight: 600;
+		color: var(--sl-color-white);
+		background: none;
+		padding: 0;
+	}
+	.api-signature-code {
+		margin: 0 0 0.75rem;
+		padding: 0.6rem 0.85rem;
+		overflow-x: auto;
+		border-radius: 0.2rem;
+		background-color: var(--sl-color-black);
+		border: 1px solid var(--sl-color-gray-6);
+		font-size: var(--sl-text-sm);
+		line-height: 1.5;
+	}
+	.api-signature-code code {
+		background: none;
+		padding: 0;
+		white-space: pre;
+	}
+	.api-signature-params {
+		width: 100%;
+		margin: 0.75rem 0;
+		font-size: var(--sl-text-sm);
+	}
+	.api-signature-params th {
+		text-align: left;
+		color: var(--sl-color-gray-2);
+		font-weight: 600;
+		padding: 0.3rem 0.6rem;
+		border-bottom: 1px solid var(--sl-color-gray-5);
+	}
+	.api-signature-params td {
+		padding: 0.4rem 0.6rem;
+		border-bottom: 1px solid var(--sl-color-gray-6);
+		vertical-align: top;
+	}
+	.api-signature-returns {
+		margin: 0.5rem 0 0;
+		font-size: var(--sl-text-sm);
+	}
+	.api-signature-body {
+		margin-top: 0.75rem;
+	}
+	.api-signature-body:empty {
+		display: none;
+	}
+</style>

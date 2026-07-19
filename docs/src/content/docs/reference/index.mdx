@@ -1,0 +1,133 @@
+---
+title: Reference — root export
+description: Every export from @nandan-varma/git-fs-s3 itself.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+```typescript
+import { /* ... */ } from '@nandan-varma/git-fs-s3';
+```
+
+## The fs backend
+
+<ApiSignature
+	name="createGitFs"
+	signature="createGitFs(store: ObjectStore, options?: GitFsOptions): GitFs"
+	params={[
+		{ name: 'store', type: 'ObjectStore', description: 'Any store — see the ObjectStore guide.' },
+		{ name: 'options', type: 'GitFsOptions', description: '<code>prefix</code>, <code>looseObjectHints</code>, <code>isStructurallyAbsent</code>, <code>hintTtlMs</code>, <code>onNote</code>.', optional: true },
+	]}
+	returns="GitFs"
+>
+	Returns a promise-based `fs` client for isomorphic-git's `fs` option, plus
+	the git-aware maintenance methods below. See
+	[Getting started](/git-fs-s3/getting-started/) and
+	[the production stack guide](/git-fs-s3/guides/production-stack/).
+</ApiSignature>
+
+`GitFs` (the returned object) additionally exposes:
+
+| Method | Signature | What it does |
+| --- | --- | --- |
+| `detectLooseObjects` | `(gitdir: string) => Promise<void>` | One bounded LIST that registers the loose-object hint for a gitdir. |
+| `prefetchPacks` | `(gitdir: string, opts?: { maxPacks? }) => Promise<void>` | Warms all pack files in parallel before a sequential walk. |
+| `invalidate` | `(pathPrefix: string) => void` | Drops hints under the prefix and forwards to the store's own `invalidate` if it has one. |
+
+## Stores
+
+<ApiSignature name="MemoryObjectStore" kind="class" signature="new MemoryObjectStore()">
+	In-memory `ObjectStore` — the reference implementation of list/delimiter
+	semantics, and what this package's own test suite runs on. See
+	[the ObjectStore guide](/git-fs-s3/guides/object-store/).
+</ApiSignature>
+
+<ApiSignature
+	name="createCachedStore"
+	signature="createCachedStore(store: ObjectStore, options?: CacheOptions): CachedObjectStore"
+	returns="CachedObjectStore"
+>
+	See [the caching guide](/git-fs-s3/guides/caching/).
+</ApiSignature>
+
+<ApiSignature
+	name="createRetryStore"
+	signature="createRetryStore(store: ObjectStore, options?: RetryOptions): ObjectStore"
+>
+	See [the retry & circuit breaker guide](/git-fs-s3/guides/retry-and-circuit-breaker/).
+	Throws `CircuitOpenError` (`code: "EUNAVAILABLE"`) while the breaker is
+	open.
+</ApiSignature>
+
+`S3ObjectStore` lives at the [`/s3` subpath](/git-fs-s3/reference/s3/), not
+the root export — it's only loaded when you actually import it, so
+`@aws-sdk/client-s3` stays an optional dependency.
+
+## Ref & path validation
+
+Shared by [`/http`](/git-fs-s3/reference/http/) internally and safe to reuse
+in your own request-handling code:
+
+| Export | Signature | What it validates |
+| --- | --- | --- |
+| `isSafeBranchName` | `(name: string) => boolean` | A bare branch name (no `refs/` prefix); rejects SHA-shaped values. |
+| `isSafeFullRefName` | `(ref: string) => boolean` | A fully-qualified ref (`refs/heads/…`/`refs/tags/…`). |
+| `isFullSha` | `(value: string) => boolean` | A full 40-hex-char commit sha. |
+| `isSafeRefName` | `(value: string) => boolean` | Branch name **or** full sha — for read paths that accept a pinned commit. |
+| `isSafeRepoPath` | `(p: string) => boolean` | A repo-relative file path: relative, no `..`, no `.git/` prefix, no null bytes. |
+| `qualifyBranchRef` | `(ref: string) => string` | Qualifies a bare name to `refs/heads/<name>`, left untouched if already qualified/`HEAD`/a sha. |
+
+<Aside type="danger">
+	These mirror isomorphic-git's own internal `isValidRef` character-class
+	rules — several isomorphic-git primitives (`git.commit`, `git.merge`,
+	`git.deleteBranch`, top-level `git.resolveRef`/`git.deleteRef`) do
+	**not** validate ref names internally the way `git.branch`/`git.writeRef`
+	do. Any ref/branch name that originates from request input must be
+	validated against one of these before it reaches those primitives, or a
+	`"../"`-laden name is a path traversal on shared storage.
+</Aside>
+
+## Errors
+
+`GitError` (base class, carrying `statusCode`/`retryable`) and its
+subclasses map internal failures to HTTP-shaped responses:
+
+| Class | Status | Notes |
+| --- | --- | --- |
+| `GitPathNotFoundError` | 404 | A path within a tree doesn't exist. |
+| `GitObjectNotFoundError` | 404 | A git object is missing from storage. |
+| `GitRefNotFoundError` | 404 | A ref (branch/tag) doesn't exist. |
+| `GitRepositoryNotFoundError` | 404 | The repository itself doesn't exist. |
+| `GitConflictError` | 409 | Carries `conflicts: MergeConflictDetail[]`. |
+| `GitAuthenticationError` | 401 | |
+| `GitAuthorizationError` | 403 | |
+| `GitRateLimitError` | 429 | |
+| `GitInvalidRequestError` | 400 | |
+| `GitProtocolError` | 400 | A git wire-protocol violation. |
+| `FsError` | — | Filesystem-shaped errors (`ENOENT`, `EINVAL`, ...) the `fs` client itself throws. |
+
+<ApiSignature
+	name="formatErrorResponse"
+	signature="formatErrorResponse(error: unknown): { status: number; body: Record<string, unknown>; headers?: Record<string, string> }"
+>
+	Maps any error to an HTTP response shape. 401s carry the
+	`WWW-Authenticate` header git clients need before they'll prompt for
+	credentials. Non-`GitError` failures are masked as opaque 500s so
+	internal messages don't leak.
+</ApiSignature>
+
+## Edge-compatible utilities
+
+The primitives `/http` and `/ops` are built on — Web APIs only, no
+`node:crypto`/`node:zlib`/`Buffer`:
+
+| Export | Purpose |
+| --- | --- |
+| `encodeUtf8` / `decodeUtf8` / `decodeAscii` | Text ↔ bytes. |
+| `concat` | Join `Uint8Array`s. |
+| `toHex` / `fromHex` / `toBase64` | Encoding conversions. |
+| `sha1` | SHA-1 via Web Crypto, returns a hex string. |
+| `deflate` | Deflate compression via `CompressionStream`. |
+| `hasNullByte` | Binary-content heuristic. |
+| `readBlobContent` | `{ isBinary, text, bytes }` from a blob's raw bytes. |

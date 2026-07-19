@@ -1,0 +1,95 @@
+---
+title: Serving clones and pushes
+description: A full worked example wiring handleInfoRefs, handleUploadPack, and applyReceivePack into a Fetch-API route.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+This wires all three request types from
+[the overview](/git-fs-s3/http/overview/) into one route, the shape you'd
+drop into Next.js, Remix, Hono, a Cloudflare Worker, or any framework with a
+Fetch-API route handler.
+
+<Steps>
+
+1. **Advertise refs.** Auth/authorization is entirely the caller's job —
+   these handlers assume it already happened.
+
+   ```typescript
+   import { handleInfoRefs } from '@nandan-varma/git-fs-s3/http';
+
+   export async function infoRefs(repo: Repo, service: 'git-upload-pack' | 'git-receive-pack') {
+     const { status, headers, body } = await handleInfoRefs(repo, { service });
+     return new Response(body, { status, headers });
+   }
+   ```
+
+2. **Serve a clone or fetch.**
+
+   ```typescript
+   import { handleUploadPack } from '@nandan-varma/git-fs-s3/http';
+
+   export async function uploadPack(repo: Repo, request: Request) {
+     const body = new Uint8Array(await request.arrayBuffer());
+     const { status, headers, body: respBody } = await handleUploadPack(repo, body);
+     return new Response(respBody, { status, headers });
+   }
+   ```
+
+3. **Accept a push.**
+
+   ```typescript
+   import { applyReceivePack, parseReceivePackBody, receivePackResponse } from '@nandan-varma/git-fs-s3/http';
+
+   export async function receivePack(repo: Repo, request: Request) {
+     const body = new Uint8Array(await request.arrayBuffer());
+     const { results, stalePackPaths } = await applyReceivePack(
+       repo,
+       parseReceivePackBody(body),
+       { repack: { threshold: 4 } } // or false to never auto-consolidate
+     );
+
+     // stalePackPaths were removed locally by the repack — delete them from
+     // any secondary storage this repo also lives in, same as you'd
+     // invalidate a cache. See "Repacking" for the full story.
+     for (const path of stalePackPaths) {
+       await deleteFromSecondaryStorage(repo, path);
+     }
+
+     const { status, headers, body: respBody } = receivePackResponse(results);
+     return new Response(respBody, { status, headers });
+   }
+   ```
+
+</Steps>
+
+## Wiring loose-object detection into upload-pack
+
+`handleUploadPack`'s second argument accepts a `beforeWalk` hook — fire it
+right before the reachability walk so a fully packed repo's clone doesn't
+pay a doomed loose-object probe per object (see
+[the production stack guide](/git-fs-s3/guides/production-stack/#loose-object-hints)):
+
+```typescript
+await handleUploadPack(
+  repo,
+  body,
+  { beforeWalk: () => (repo.fs as GitFs).detectLooseObjects(repo.gitdir) },
+  hooks
+);
+```
+
+<Aside type="tip">
+	The single-pack fast path (a fresh clone of an already-consolidated repo)
+	skips the reachability walk entirely, so it never reaches `beforeWalk` —
+	you don't need to special-case that.
+</Aside>
+
+## Routing
+
+None of these handlers care how you route to them — they only need `repo`
+(a `{ fs, gitdir, cache? }`, however you resolve it per-request) and the
+raw `Request`. A typical catch-all route parses the URL
+(`.../<owner>/<repo>.git/info/refs`, `.../git-upload-pack`,
+`.../git-receive-pack`), resolves `repo` for that owner/repo pair, checks
+auth, and dispatches to the matching handler above.

@@ -1,0 +1,121 @@
+---
+title: The production stack
+description: How to compose caching, retry, and the git-aware fs layer for a real serving path — and why the order matters.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+A single R2/S3 read is cheap. A repo page that renders a file tree, a commit
+log, and a diff is not — it can mean hundreds of object reads. This guide is
+the stack a production git-hosting service actually runs, in the order it
+actually runs in, with the reasoning for each layer.
+
+## The full stack
+
+```typescript
+import {
+  createCachedStore,
+  createGitFs,
+  createRetryStore,
+} from '@nandan-varma/git-fs-s3';
+import { S3ObjectStore } from '@nandan-varma/git-fs-s3/s3';
+
+const store = createCachedStore(
+  createRetryStore(
+    new S3ObjectStore({
+      client,
+      bucket: 'my-git-repos',
+      contentType: (key) =>
+        /\/(HEAD|config)$|\/refs\//.test(key) ? 'text/plain' : undefined,
+    })
+  ),
+  {
+    maxBytes: 256 * 1024 * 1024,
+    ttlMs: 3_600_000,
+    cacheMisses: true,
+    cacheLists: true,
+  }
+);
+
+const fs = createGitFs(store, {
+  looseObjectHints: true,
+  isStructurallyAbsent: (p) => /(^|\/)git\/(packed-refs|shallow)$/.test(p),
+});
+```
+
+## Why this exact order
+
+<Steps>
+
+1. **`S3ObjectStore` at the bottom.** The real network call.
+
+2. **`createRetryStore` wraps it directly.** Retry belongs as close to the
+   network as possible: retrying at this layer means every consumer above
+   (including the cache) sees a request that either eventually succeeds or
+   fails for real — never a request that failed transiently and got treated
+   as a permanent miss.
+
+3. **`createCachedStore` wraps the retry store.** This is the order that
+   matters most: if the cache were *underneath* retry, a transient failure
+   during a cached-misses lookup could get memoized as "not found" for the
+   full TTL. With retry underneath, the cache never even sees a transient
+   failure — only a real result or a real (rare, already-retried) error.
+
+4. **`createGitFs` wraps the cache.** The git-aware layer (loose-object
+   hints, structural-absence short-circuits) sits on top so its own
+   bookkeeping benefits from everything below it being fast and resilient.
+
+</Steps>
+
+## Loose-object hints
+
+isomorphic-git probes for a loose object before falling back to searching
+packs. On a fully packed repository, every one of those probes is a
+guaranteed miss — pure wasted round trips. `looseObjectHints: true` tracks,
+per gitdir, whether *any* loose object has ever been seen, so a packed repo
+skips the probe entirely.
+
+Hints don't self-populate — call `detectLooseObjects(gitdir)` once per
+gitdir before a full-history walk:
+
+```typescript
+await fs.detectLooseObjects(gitdir); // one bounded LIST per repo
+```
+
+A loose *write* flips the hint back on instantly, so it's impossible for a
+hint to go stale mid-push and hide a just-written object.
+
+## `isStructurallyAbsent`
+
+Some paths git probes constantly but a given backend simply never writes —
+`packed-refs` and `shallow`, for a backend that never packs refs or does
+shallow clones. `isStructurallyAbsent` answers `ENOENT` for them with **zero**
+store calls, not even a cached miss.
+
+<Aside type="caution">
+	Match precisely. A plain suffix check is wrong — `refs/heads/packed-refs`
+	is a legal branch name, and a sloppy pattern would 404 it.
+</Aside>
+
+## Pack prefetching
+
+Before a full-history walk (a commit log, a reachability traversal), warm
+every pack file in parallel instead of paying one round trip per pack as the
+walk discovers each one sequentially:
+
+```typescript
+await fs.prefetchPacks(gitdir);
+```
+
+## Invalidation
+
+Anything that writes to the bucket *around* this `fs` — a hydrate/sync
+pipeline, a bulk upload, another process — must invalidate the affected
+state, or reads can stay stale for up to `ttlMs`:
+
+```typescript
+fs.invalidate('repos/alice/blog');
+```
+
+This forwards to the underlying cached store's own `invalidate(prefix)` and
+also clears any loose-object hints under that prefix.

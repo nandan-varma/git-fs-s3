@@ -1,0 +1,161 @@
+---
+title: Trees, history & diff
+description: Tree primitives, the result-cache-keyed-by-head-sha commit log pattern, file history, and diffs.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+## Tree primitives
+
+<ApiSignature
+	name="upsertTree"
+	signature="upsertTree(repo: Repo, treeOid: string | undefined, entries: Map<string, string>): Promise<string>"
+	params={[
+		{ name: 'treeOid', type: 'string | undefined', description: 'The existing root tree, or <code>undefined</code> to start empty.' },
+		{ name: 'entries', type: 'Map<string, string>', description: 'relativePath → blobOid.' },
+	]}
+	returns="Promise<string>"
+>
+	Builds/updates a tree by overlaying blobs onto an existing one, returning
+	the new root tree oid. Handles nested paths — intermediate subtrees are
+	created or updated as needed. Sibling subdirectories are built in
+	parallel.
+</ApiSignature>
+
+<ApiSignature
+	name="deleteFromTree"
+	signature="deleteFromTree(repo: Repo, treeOid: string, filePath: string): Promise<string>"
+	returns="Promise<string>"
+>
+	Removes one path from a tree, returning the new root tree oid.
+</ApiSignature>
+
+<ApiSignature
+	name="findTreeEntry"
+	signature="findTreeEntry(repo: Repo, rootTreeOid: string, treePath: string): Promise<TreeEntry | null>"
+	returns="Promise<TreeEntry | null>"
+>
+	Resolves a path inside a tree to its entry (`{ path, mode, type, oid }`),
+	or `null` if it doesn't exist. An empty `treePath` returns the root tree
+	itself.
+</ApiSignature>
+
+<ApiSignature
+	name="listTreeEntries"
+	signature="listTreeEntries(repo: Repo, treeOid: string, prefix?: string): Promise<TreeEntry[]>"
+	returns="Promise<TreeEntry[]>"
+>
+	A tree's direct children, with `path` prefixed by `prefix` if given —
+	used to build result entries whose keys are already the full path a
+	caller expects.
+</ApiSignature>
+
+## History: `getCommitLog`
+
+<ApiSignature
+	name="getCommitLog"
+	signature="getCommitLog(repo: Repo, options?: CommitLogOptions, hooks?: OpsHooks): Promise<CommitInfo[]>"
+	params={[
+		{ name: 'options.ref', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'options.depth', type: 'number', description: 'Defaults to 50.', optional: true },
+		{
+			name: 'options.knownHeadSha',
+			type: 'string',
+			description: 'Pass this when the caller already resolved <code>ref</code> — skips a redundant resolveRef.',
+			optional: true,
+		},
+	]}
+	returns="Promise<CommitInfo[]>"
+>
+	The commit chain from a ref, newest first.
+</ApiSignature>
+
+<Aside type="danger" title="The one pattern worth internalizing from this whole package">
+	Walking a commit chain is inherently sequential — each commit's oid is
+	only discoverable by reading its child first — and it's network-round
+	-trip-bound against object storage. `getCommitLog` memoizes the
+	*deepest* walk seen per resolved head sha in `hooks.resultCache` and
+	slices/reuses it for shallower or repeated requests, rather than
+	re-walking from scratch every time a page needs "the last 10 commits" and
+	then, moments later, "the last 50."
+
+	This is very easy to reimplement badly (or not at all) if you're calling
+	`git.log` directly instead of going through this function — and it's
+	the single biggest performance lever in this whole layer for any page
+	that shows commit history more than once per request. Don't bypass it.
+</Aside>
+
+## `getCommitHistory`: pagination on top of the log cache
+
+<ApiSignature
+	name="getCommitHistory"
+	signature="getCommitHistory(repo: Repo, options: { ref, limit?, skip? }, hooks?: OpsHooks): Promise<CommitInfo[]>"
+	returns="Promise<CommitInfo[]>"
+>
+	A page of commit history (`limit`/`skip`), built directly on top of
+	`getCommitLog`'s own cache for the underlying chain — a paginated commit
+	list view doesn't re-walk anything `getCommitLog` already walked for a
+	different page size.
+</ApiSignature>
+
+## File history & last-commits-per-directory
+
+<ApiSignature
+	name="getFileHistory"
+	signature="getFileHistory(repo: Repo, options: { ref, filePath, limit?, maxDepth? }, hooks?: OpsHooks): Promise<FileHistoryResult>"
+	returns="Promise<FileHistoryResult>"
+>
+	All commits (newest first) that changed one file's blob oid, walking the
+	first-parent chain. `{ entries, truncated }` — `truncated: true` means
+	the walk hit its depth budget (or the requested `limit`) before
+	exhausting the branch's full commit chain; there may be older commits
+	touching this file a deeper walk would surface.
+</ApiSignature>
+
+<ApiSignature
+	name="getLastCommitsForTree"
+	signature="getLastCommitsForTree(repo: Repo, options: { ref, treePath?, depth? }, hooks?: OpsHooks): Promise<Record<string, LastCommitInfo>>"
+	returns="Promise<Record<string, LastCommitInfo>>"
+>
+	For each direct child of `treePath`, the most recent commit that changed
+	it — the tree-view "last commit" column GitHub-style UIs show next to
+	every file and folder.
+</ApiSignature>
+
+Both walk history in fixed-size windows, **prefetching each window's tree
+reads in parallel before processing that window sequentially** — the walk
+itself must advance commit-by-commit for correctness (each step needs to
+know what's still unresolved from the step before), but the tree-object
+reads backing it don't depend on each other, since every commit's tree oid
+is already known upfront from the commit log. Preserve this two-phase
+structure if you ever need to touch this algorithm — collapsing it back to
+one-commit-at-a-time turns a batched-round-trip walk back into a
+round-trip-per-commit one, which is the single largest contributor to slow
+directory listings on large repos.
+
+## Diff
+
+<ApiSignature
+	name="getCommitDiff"
+	signature="getCommitDiff(repo: Repo, commitSha: string): Promise<DiffResult>"
+	returns="Promise<DiffResult>"
+>
+	The diff a single commit introduced, against its first parent. For a root
+	commit (no parent), every file in the tree is reported as `added` — the
+	whole tree is walked recursively, not just its top level.
+</ApiSignature>
+
+<ApiSignature
+	name="getDiffBetweenRefs"
+	signature="getDiffBetweenRefs(repo: Repo, baseRef: string, compareRef: string): Promise<DiffResult>"
+	returns="Promise<DiffResult>"
+>
+	The diff between two refs (branch names or commit shas — both are
+	accepted). `DiffResult` is `{ files: DiffFile[], totalAdditions,
+	totalDeletions, totalFiles }`; each `DiffFile` carries a git-style
+	unified patch (`diff --git a/... b/...` header, no leaking `diff`
+	package internals like an `Index:`/`===` block) plus binary detection
+	(`isBinary`, base64 `oldContent`/`newContent` for binary files instead of
+	a text patch).
+</ApiSignature>

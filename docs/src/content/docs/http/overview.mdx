@@ -1,0 +1,86 @@
+---
+title: Git smart-HTTP overview
+description: Why the /http module exists, its shape, and the HttpHooks instrumentation seam.
+---
+
+import { Aside, CardGrid, Card } from '@astrojs/starlight/components';
+import RuntimeSupport from '../../../components/RuntimeSupport.astro';
+
+`@nandan-varma/git-fs-s3/http` implements the git smart-HTTP protocol
+(`info/refs`, `upload-pack`, `receive-pack`) as plain functions over a
+`Repo` — no framework assumptions, Fetch-API-shaped inputs and outputs.
+Extracted from the same production git-hosting service's HTTP layer, so
+it's what actually serves `git clone`/`git push` over HTTPS today: pkt-line
+framing, side-band-64k packfile chunking, compare-and-swap ref updates, and
+pack consolidation.
+
+<RuntimeSupport
+	runtimes={[
+		{ name: 'Node.js', supported: true },
+		{ name: 'Cloudflare Workers', supported: true },
+		{ name: 'Deno', supported: true },
+		{ name: 'Browser', supported: true, note: 'No filesystem access needed — everything goes through the Repo you supply.' },
+	]}
+/>
+
+This module is pure Web APIs (`Uint8Array`, `Web Crypto`, `CompressionStream`)
+— no `node:crypto`, no `node:zlib`, no `Buffer`. It runs anywhere
+`@nandan-varma/git-fs-s3` itself does.
+
+## The three request types
+
+<CardGrid>
+	<Card title="info/refs" icon="magnifier">
+		`GET .../info/refs?service=git-upload-pack` (or `git-receive-pack`) — the
+		ref advertisement a client fetches before deciding what to want or push.
+		Handled by [`handleInfoRefs`](/git-fs-s3/reference/http/#handleinforefs).
+	</Card>
+	<Card title="upload-pack" icon="download">
+		`POST .../git-upload-pack` — serves a clone or fetch. Handled by
+		[`handleUploadPack`](/git-fs-s3/reference/http/#handleuploadpack).
+	</Card>
+	<Card title="receive-pack" icon="rocket">
+		`POST .../git-receive-pack` — accepts a push. Handled by
+		[`parseReceivePackBody`](/git-fs-s3/reference/http/#parsereceivepackbody) +
+		[`applyReceivePack`](/git-fs-s3/reference/http/#applyreceivepack).
+	</Card>
+</CardGrid>
+
+See [Serving clones and pushes](/git-fs-s3/http/serving-clones-and-pushes/)
+for a full worked example wiring all three into a route handler.
+
+## `HttpHooks`
+
+Every handler in this module accepts an optional `hooks` argument — the
+same instrumentation seam used throughout `/ops`:
+
+```typescript
+interface HttpHooks {
+  /** Wrap a timed sub-step. Default: run directly. */
+  step?<T>(label: string, fn: () => Promise<T>): Promise<T>;
+  /** Non-fatal problem sink (missing objects, failed repacks). */
+  onWarn?(message: string, error?: unknown): void;
+}
+```
+
+`step` is shaped exactly like a typical app-level timing wrapper (e.g.
+`perfStep(label, fn)`) — drop yours in directly:
+
+```typescript
+const hooks = { step: perfStep, onWarn: (m, e) => logWarn('git-http', m, e) };
+await handleInfoRefs(repo, { service: 'git-upload-pack' }, hooks);
+```
+
+<Aside type="danger" title="Ref validation is not optional">
+	Every client-supplied ref name in a push is validated with
+	`isSafeFullRefName` *inside* `applyReceivePack` before it reaches any
+	filesystem call — `git.commit`/`git.merge`/`git.deleteBranch` and the raw
+	`git.resolveRef`/`git.deleteRef`/`git.writeRef` isomorphic-git calls this
+	module uses internally do **not** validate ref names themselves. This is
+	handled for you inside `applyReceivePack`. If you build additional
+	git-touching endpoints on top of this package outside of `/http`, run any
+	ref/branch name from request input through `isSafeFullRefName` /
+	`isSafeBranchName` / `isSafeRefName` / `isSafeRepoPath` (exported from the
+	root package) yourself first — an unvalidated `"../"`-laden name is a
+	cross-repo path traversal on any shared-storage server.
+</Aside>

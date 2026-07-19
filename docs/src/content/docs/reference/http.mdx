@@ -1,0 +1,187 @@
+---
+title: Reference — /http
+description: Every export from @nandan-varma/git-fs-s3/http.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+```typescript
+import { /* ... */ } from '@nandan-varma/git-fs-s3/http';
+```
+
+See [the overview](/git-fs-s3/http/overview/) for `HttpHooks` and the
+overall shape, and [Serving clones and pushes](/git-fs-s3/http/serving-clones-and-pushes/)
+for a full worked example.
+
+## info/refs
+
+<ApiSignature
+	name="handleInfoRefs"
+	signature="handleInfoRefs(repo: Repo, options: InfoRefsOptions, hooks?: HttpHooks): Promise<GitHttpResult>"
+	params={[
+		{ name: 'options.service', type: '"git-upload-pack" | "git-receive-pack"', description: '' },
+		{ name: 'options.defaultBranch', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'options.agent', type: 'string', description: 'Advertised in the capability line. Default <code>"git-fs-s3"</code>.', optional: true },
+	]}
+	returns="Promise<GitHttpResult>"
+>
+	The `GET .../info/refs?service=…` ref advertisement. Authentication and
+	authorization are the caller's job before invoking this.
+</ApiSignature>
+
+<ApiSignature
+	name="listAllRefs"
+	signature="listAllRefs(repo: Repo, defaultBranch?: string): Promise<{ refs, headSymref }>"
+	returns="Promise<{ refs: { name; oid }[]; headSymref: string }>"
+>
+	The lower-level primitive `handleInfoRefs` is built on, exposed in case
+	you need the raw ref list without the pkt-line framing.
+</ApiSignature>
+
+## upload-pack
+
+<ApiSignature
+	name="handleUploadPack"
+	signature="handleUploadPack(repo: Repo, body: Uint8Array, options?: UploadPackOptions, hooks?: HttpHooks): Promise<GitHttpResult>"
+	params={[
+		{ name: 'body', type: 'Uint8Array', description: 'The raw POST body.' },
+		{
+			name: 'options.beforeWalk',
+			type: '() => Promise<void>',
+			description: 'Called once before the reachability walk — wire loose-object detection here.',
+			optional: true,
+		},
+	]}
+	returns="Promise<GitHttpResult>"
+>
+	Serves a clone/fetch. Negotiation is client-driven (no `multi_ack`
+	advertised): `have` batches without `done` get a bare `NAK`; the final
+	batch gets the packfile, side-band-64k framed. A fresh clone of a repo
+	already consolidated to a single pack serves that pack's bytes directly,
+	skipping the reachability walk entirely.
+</ApiSignature>
+
+## receive-pack
+
+<ApiSignature
+	name="parseReceivePackBody"
+	signature="parseReceivePackBody(body: Uint8Array): { refUpdates: RefUpdateCommand[]; packData: Uint8Array }"
+	returns="{ refUpdates: RefUpdateCommand[]; packData: Uint8Array }"
+>
+	Splits a receive-pack body into its pkt-line ref-update commands and the
+	trailing raw pack bytes.
+</ApiSignature>
+
+<ApiSignature
+	name="applyReceivePack"
+	signature="applyReceivePack(repo: Repo, parsed: ReturnType<typeof parseReceivePackBody>, options?: ApplyReceivePackOptions, hooks?: HttpHooks): Promise<{ results, stalePackPaths }>"
+	params={[
+		{ name: 'options.defaultBranch', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{
+			name: 'options.repack',
+			type: 'RepackOptions | false',
+			description: 'Repack tuning, or <code>false</code> to skip repacking entirely.',
+			optional: true,
+		},
+	]}
+	returns="Promise<{ results: RefUpdateResult[]; stalePackPaths: string[] }>"
+>
+	The storage half of a push: initializes the repo if needed, indexes the
+	incoming pack, applies ref updates with compare-and-swap against each
+	command's claimed `oldOid` (a stale push is rejected, not force-applied),
+	then repacks once enough packs have accumulated. Build the HTTP response
+	afterwards with `receivePackResponse`. See
+	[Repacking](/git-fs-s3/http/repacking/) for `stalePackPaths`.
+</ApiSignature>
+
+<ApiSignature
+	name="applyRefUpdates"
+	signature="applyRefUpdates(repo: Repo, refUpdates: RefUpdateCommand[], hooks?: HttpHooks): Promise<RefUpdateResult[]>"
+	returns="Promise<RefUpdateResult[]>"
+>
+	The ref-update half of `applyReceivePack`, exposed standalone. Every
+	client-supplied `refName` is validated with `isSafeFullRefName` before it
+	reaches any filesystem call — see the warning on
+	[the overview page](/git-fs-s3/http/overview/#httphooks).
+</ApiSignature>
+
+<ApiSignature
+	name="ensureRepoInitialized"
+	signature="ensureRepoInitialized(repo: Repo, defaultBranch?: string): Promise<void>"
+>
+	Initializes the repo when `HEAD` doesn't exist yet (a first push).
+</ApiSignature>
+
+<ApiSignature
+	name="indexIncomingPack"
+	signature="indexIncomingPack(repo: Repo, packData: Uint8Array, hooks?: HttpHooks): Promise<void>"
+>
+	Writes an incoming pack into `objects/pack/` and indexes it.
+</ApiSignature>
+
+<ApiSignature
+	name="receivePackResponse"
+	signature="receivePackResponse(results: RefUpdateResult[]): GitHttpResult"
+	returns="GitHttpResult"
+>
+	Builds the `report-status` response body from a set of ref-update
+	results.
+</ApiSignature>
+
+## Repacking
+
+<ApiSignature
+	name="repackRepository"
+	signature="repackRepository(repo: Repo, options?: RepackOptions, hooks?: HttpHooks): Promise<string[]>"
+	returns="Promise<string[]>"
+>
+	See [the dedicated repacking page](/git-fs-s3/http/repacking/) — the
+	threshold, why every object is re-verified, and the deletion contract.
+</ApiSignature>
+
+`REPACK_PACK_COUNT_THRESHOLD` (`= 4`) is the default `RepackOptions.threshold`.
+
+## Reachability
+
+<ApiSignature
+	name="collectReachableOids"
+	signature="collectReachableOids(repo: Repo, startOids: string[], hooks?: HttpHooks): Promise<ReachabilityResult>"
+	returns="Promise<ReachabilityResult>"
+>
+	Walks the full object graph from `startOids`. `{ oids, complete }` —
+	`complete: false` if any object in the graph couldn't be read; a missing
+	object is retried once (a read landing mid-repack-transition can
+	transiently miss an object that isn't actually lost) before being
+	reported through `hooks.onWarn`.
+</ApiSignature>
+
+## pkt-line framing
+
+Low-level helpers, exposed if you're implementing protocol pieces this
+module doesn't cover:
+
+| Export | Signature |
+| --- | --- |
+| `FLUSH` | `Uint8Array` — the flush-pkt (`"0000"`). |
+| `pktLine` | `(data: string) => Uint8Array` |
+| `pktLineBuffer` | `(body: Uint8Array) => Uint8Array` |
+| `parsePktLines` | `(buf: Uint8Array) => Array<string \| null>` — `null` marks a flush-pkt. |
+| `sideBandPackfile` | `(packData: Uint8Array) => Uint8Array` — chunks packfile bytes into side-band-64k framed pkt-lines. |
+
+<Aside type="note">
+	`sideBandPackfile` exists because clients that unconditionally expect
+	side-band framing on the response (isomorphic-git's own `GitSideBand.demux`
+	is one) misparse a raw packfile stream as bogus pkt-line length headers
+	and hang — this is required once side-band-64k is advertised, which
+	`handleInfoRefs` always does.
+</Aside>
+
+## Types
+
+| Export | Shape |
+| --- | --- |
+| `GitHttpResult` | `{ status: number; headers: Record<string, string>; body: Uint8Array<ArrayBuffer> }` |
+| `HttpHooks` | `{ step?, onWarn? }` — see [the overview](/git-fs-s3/http/overview/#httphooks). |
+| `RawFsPromises` | The `.promises` surface `applyReceivePack`/`repackRepository` need beyond isomorphic-git's own plumbing. |
+| `rawFs` | `(repo: Repo) => RawFsPromises` — duck-types the `.promises` surface off a repo's `fs`. |

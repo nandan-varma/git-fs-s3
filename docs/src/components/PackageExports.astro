@@ -1,0 +1,45 @@
+---
+/**
+ * A card grid of a package's subpath exports — used on landing/getting
+ * -started pages so a reader can see the whole surface area of the package
+ * at a glance before diving into individual guides.
+ */
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+interface ExportEntry {
+	/** The import path, e.g. `@nandan-varma/git-fs-s3/http`. */
+	path: string;
+	/** One line: what this subpath is for. */
+	description: string;
+	/** Optional link to the reference/guide page covering it. */
+	href?: string;
+}
+
+interface Props {
+	exports: ExportEntry[];
+}
+
+const { exports: entries } = Astro.props;
+---
+
+<CardGrid>
+	{
+		entries.map((entry) => (
+			<Card title={`<code>${entry.path}</code>`} icon="puzzle">
+				<p set:html={entry.description} />
+				{entry.href && (
+					<a class="export-link" href={entry.href}>
+						Read more →
+					</a>
+				)}
+			</Card>
+		))
+	}
+</CardGrid>
+
+<style>
+	.export-link {
+		font-size: var(--sl-text-sm);
+		font-weight: 600;
+	}
+</style>

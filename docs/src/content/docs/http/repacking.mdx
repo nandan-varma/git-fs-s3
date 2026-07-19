@@ -1,0 +1,80 @@
+---
+title: Repacking
+description: repackRepository's consolidation logic and its independent SHA-1 verification design.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+Object storage accumulates one new pack file per push forever unless
+something consolidates them. `repackRepository` does that consolidation.
+
+<ApiSignature
+	name="repackRepository"
+	signature="repackRepository(repo: Repo, options?: RepackOptions, hooks?: HttpHooks): Promise<string[]>"
+	params={[
+		{ name: 'repo', type: 'Repo', description: 'The repository to consolidate.' },
+		{
+			name: 'options',
+			type: 'RepackOptions',
+			description: '<code>{ threshold?: number }</code> — skip below this many accumulated packs. Default 4.',
+			optional: true,
+		},
+		{ name: 'hooks', type: 'HttpHooks', description: 'See the overview page.', optional: true },
+	]}
+	returns="Promise<string[]>"
+>
+	The gitdir-relative paths of the `.pack`/`.idx` files it removed
+	*locally*. After syncing the new consolidated pack to any secondary
+	storage, delete those same paths there too — see the note in
+	[Serving clones and pushes](/git-fs-s3/http/serving-clones-and-pushes/).
+</ApiSignature>
+
+Also exported standalone (not just as part of `applyReceivePack`'s
+push-triggered repack) for out-of-band maintenance — clearing a backlog
+that accumulated before this threshold existed, on a repo that won't
+otherwise get repacked until its next push crosses it again.
+
+## Why the threshold
+
+Consolidating is **O(total repo object count)** — a full reachability
+traversal plus a full pack build over *everything*, not just what the
+triggering push added. Paying that cost on every single push makes push
+latency grow with total repo size forever, not with the size of the
+just-pushed delta. Below the threshold, clone/fetch's own near-O(1) pack
+search (isomorphic-git checks each pack's index) is already cheap enough
+that consolidating isn't worth the extra push latency — skip it and let the
+next call re-check once enough small pushes have piled up packs.
+
+## Why every object is independently re-verified
+
+isomorphic-git's *packed*-object read path — `readObjectPacked`, which
+resolves offset/ref deltas, possibly across pack files — never verifies the
+resolved content's SHA-1 against the requested oid. Only the loose-object
+read path does that check. A full reachability walk (exactly what repacking
+requires) is the operation most likely to touch objects nothing else ever
+reads, so a latent cross-pack delta-resolution bug would surface here
+first — silently, corrupting the consolidated pack — unless it's checked
+independently.
+
+`repackRepository` reads every reachable object, independently recomputes
+its SHA-1 from the bytes it got back, and refuses to trust a mismatch. The
+resulting pack is written with **only full, non-deltified objects** — which
+also means the write path never touches the suspect delta-resolution code
+at all, since there are no deltas in it to resolve.
+
+<Aside type="note">
+	This is also why the consolidated pack is verified once more after
+	writing: the newly built index's oid set is cross-checked against the
+	verified reachable set before any old pack is deleted. If they don't
+	match exactly, the new pack and index are deleted and the repack aborts
+	— old packs are never removed on anything less than full certainty the
+	replacement is complete.
+</Aside>
+
+## Repack failure is non-fatal
+
+If a repack throws partway through, it's caught and reported via
+`hooks.onWarn` rather than failing the push that triggered it — a push
+still succeeds even when its trailing repack doesn't; the repo just carries
+one extra pack file until the next attempt.

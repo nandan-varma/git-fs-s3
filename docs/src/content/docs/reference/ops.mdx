@@ -1,0 +1,139 @@
+---
+title: Reference — /ops
+description: Every export from @nandan-varma/git-fs-s3/ops.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+```typescript
+import { /* ... */ } from '@nandan-varma/git-fs-s3/ops';
+```
+
+See [the overview](/git-fs-s3/ops/overview/) for `OpsHooks`/`ResultCache`
+and the `Repo` shape shared by every function here.
+
+## Branches & commits
+
+`listBranches`, `createBranchFrom`, `deleteBranchByName`,
+`assertBranchExists`, `authorNow`, `commitFilesToBare`,
+`deleteFileFromBare`, `writeCommitToBare` — see
+[Branches & commits](/git-fs-s3/ops/branches-and-commits/) for full
+signatures.
+
+## Reading objects directly
+
+<ApiSignature
+	name="resolveCommit"
+	signature="resolveCommit(repo: Repo, ref: string): Promise<{ oid: string; commit: CommitObject }>"
+	returns="Promise<{ oid; commit }>"
+>
+	Resolves a branch name / full ref / sha to its commit object. The
+	primitive `getFileContent` and `getTreeFromRef` build on.
+</ApiSignature>
+
+<ApiSignature
+	name="getBlob"
+	signature="getBlob(repo: Repo, sha: string): Promise<Uint8Array>"
+	returns="Promise<Uint8Array>"
+>
+	A blob's raw bytes by oid. Throws `GitObjectNotFoundError` (not a raw
+	isomorphic-git `NotFoundError`) if the object is missing from storage —
+	distinct from "the file doesn't exist at this path," which is what
+	`getFileContent` throws `GitPathNotFoundError` for.
+</ApiSignature>
+
+<ApiSignature
+	name="getFileContent"
+	signature="getFileContent(repo: Repo, filePath: string, ref?: string): Promise<Uint8Array>"
+	params={[{ name: 'ref', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true }]}
+	returns="Promise<Uint8Array>"
+>
+	A file's raw bytes at a ref. Throws `GitPathNotFoundError` when the path
+	doesn't exist.
+</ApiSignature>
+
+<ApiSignature
+	name="getFileFromRef"
+	signature="getFileFromRef(repo: Repo, filePath: string, ref: string): Promise<{ content, size, isBinary }>"
+	returns="Promise<{ content: string; size: number; isBinary: boolean }>"
+>
+	`getFileContent`, decoded for display — utf8 text, or base64 when the
+	content is detected as binary (a null-byte heuristic).
+</ApiSignature>
+
+<ApiSignature
+	name="getCommit"
+	signature="getCommit(repo: Repo, sha: string): Promise<CommitInfo>"
+	returns="Promise<CommitInfo>"
+>
+	One commit by sha. `CommitInfo` is `{ oid, commit: { message, tree,
+	parent, author, committer }, payload }`.
+</ApiSignature>
+
+## Trees, history & diff
+
+Tree primitives (`upsertTree`, `deleteFromTree`, `findTreeEntry`,
+`listTreeEntries`), `getTreeFromRef`, `getCommitLog`, `getCommitHistory`,
+`getFileHistory`, `getLastCommitsForTree`, `getCommitDiff`,
+`getDiffBetweenRefs` — see
+[Trees, history & diff](/git-fs-s3/ops/trees-history-and-diff/) for full
+signatures, and don't miss the note on `getCommitLog`'s result-cache
+pattern.
+
+<ApiSignature
+	name="getTreeFromRef"
+	signature="getTreeFromRef(repo: Repo, options?: { ref?, treePath? }, hooks?: OpsHooks): Promise<TreeEntry[]>"
+	returns="Promise<TreeEntry[]>"
+>
+	List a directory at the tip of a ref. `[]` for an empty repo/unborn
+	branch; throws `GitPathNotFoundError` when `treePath` doesn't exist.
+	Results are memoized per head sha.
+</ApiSignature>
+
+## Merge
+
+`analyzeMerge`, `fastForwardMerge` — see [Merge](/git-fs-s3/ops/merge/).
+
+## Cache key management
+
+<ApiSignature
+	name="resultKeyPrefixes"
+	signature="resultKeyPrefixes(gitdir: string): string[]"
+	returns="string[]"
+>
+	The `ResultCache` key prefixes holding entries for `gitdir` — evict these
+	from your cache when a repo's storage was rewritten outside a normal push
+	(a bulk sync, a rename, a repack cleanup).
+</ApiSignature>
+
+<Aside type="danger">
+	Always derive invalidation prefixes from this function — never hand-roll
+	your own prefix scheme. See the warning on
+	[the overview page](/git-fs-s3/ops/overview/#resultcache).
+</Aside>
+
+## Types
+
+| Export | Shape |
+| --- | --- |
+| `Repo` | `{ fs: IsoGitFs; gitdir: string; cache?: object }` |
+| `IsoGitFs` | The `fs` shape isomorphic-git itself accepts. |
+| `OpsHooks` | `{ resultCache?, step?, onNote?, prefetch?, prefetchMinDepth? }` |
+| `ResultCache` | `{ get<T>(key): T \| null \| undefined; set(key, value): void }` |
+| `Branch` | `{ name: string; commit: string; isDefault: boolean }` |
+| `CommitAuthor` | `{ name, email, timestamp, timezoneOffset }` |
+| `CommitInfo` | `{ oid, commit: { message, tree, parent, author, committer }, payload }` |
+| `CommitLogOptions` | `{ ref?, depth?, knownHeadSha? }` |
+| `TreeEntry` | `{ path, mode, type: "blob" \| "tree", oid, size? }` |
+| `DiffFile` | `{ path, status, additions, deletions, patch, isBinary?, oldContent?, newContent?, ... }` |
+| `DiffResult` | `{ files: DiffFile[]; totalAdditions; totalDeletions; totalFiles }` |
+| `FileHistoryEntry` | `{ sha, message, authorName, authorEmail, createdAt }` |
+| `FileHistoryResult` | `{ entries: FileHistoryEntry[]; truncated: boolean }` |
+| `LastCommitInfo` | `{ sha, message, authorName, authorEmail, createdAt }` |
+| `MergeAnalysis` | `{ canMerge, hasConflicts, conflictingFiles, fastForward }` |
+
+`HISTORY_WALK_DEPTH` (`= 400`) and `BANNER_WALK_DEPTH` (`= 60`) are the
+default/shallow walk-depth constants used by `getFileHistory` and
+`getLastCommitsForTree` — see
+[Trees, history & diff](/git-fs-s3/ops/trees-history-and-diff/).

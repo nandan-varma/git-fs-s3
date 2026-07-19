@@ -1,0 +1,82 @@
+---
+title: Merge
+description: analyzeMerge and fastForwardMerge — cheap pre-merge checks and worktree-free fast-forwards.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import ApiSignature from '../../../components/ApiSignature.astro';
+
+<ApiSignature
+	name="analyzeMerge"
+	signature="analyzeMerge(repo: Repo, sourceBranch: string, targetBranch: string): Promise<MergeAnalysis>"
+	returns="Promise<MergeAnalysis>"
+>
+	A cheap pre-merge check: do both branches exist, and is this a
+	fast-forward? `{ canMerge, hasConflicts, conflictingFiles, fastForward }`.
+</ApiSignature>
+
+<Aside type="caution" title="hasConflicts is not a real conflict check">
+	`hasConflicts`/`conflictingFiles` do **not** mean a real content-conflict
+	check ran — isomorphic-git's `git.merge` doesn't expose a dry-run mode,
+	so there's no cheap way to know in advance. They only ever reflect "one
+	of the branches couldn't be resolved" (mirrored into `canMerge: false`).
+	`canMerge` is the field that actually matters. Real merge conflicts are
+	only discoverable by attempting the merge for real.
+</Aside>
+
+`canMerge: false` means one of the refs genuinely didn't resolve
+(`NotFoundError` — a deleted branch, a typo). Any *other* failure — a
+corrupted object, a storage read error — propagates instead of being folded
+into `canMerge: false`, which would otherwise misreport "this branch
+doesn't exist" for a problem that has nothing to do with either branch's
+existence.
+
+<ApiSignature
+	name="fastForwardMerge"
+	signature="fastForwardMerge(repo: Repo, sourceBranch: string, targetBranch: string): Promise<{ success: true; commitSha: string } | null>"
+	returns="Promise<{ success: true; commitSha: string } | null>"
+>
+	Attempts a fast-forward directly against the bare repo — when `source` is
+	a descendant of `target`, this just moves the target ref, no worktree, no
+	new commit object. Returns `null` when the merge isn't a fast-forward
+	(diverged branches); callers fall back to a real three-way merge, which
+	does need a worktree.
+</ApiSignature>
+
+Serialize with a per-repo lock — the resolve → write-ref sequence isn't
+atomic on object storage.
+
+## Going further: real three-way merges without a worktree
+
+Neither `analyzeMerge` nor `fastForwardMerge` performs a real content merge
+for diverged branches — that's intentionally out of scope here, since it
+needs either a worktree (isomorphic-git's own `git.merge`) or an
+object-level merge implementation.
+
+[`@nandan-varma/git-edge`](https://nandan-varma.github.io/git-edge/)'s
+`threeWayMerge` is exactly that: a real three-way content merge that works
+directly on the object graph — no checkout, no worktree — specifically
+built to compose with this package for repos that live entirely in object
+storage with no durable disk to check out onto.
+
+```typescript
+import { threeWayMerge, GitMergeConflictError } from '@nandan-varma/git-edge';
+
+try {
+  const { commitOid } = await threeWayMerge(repo, sourceBranch, targetBranch);
+} catch (err) {
+  if (err instanceof GitMergeConflictError) {
+    console.log('conflicts in:', err.conflictingPaths);
+  }
+}
+```
+
+<Aside type="note">
+	`git-edge`'s own `analyzeMerge` and this package's are near-identical in
+	shape but not the same function — `git-edge`'s returns `{ canMerge,
+	fastForward, diverged }` (no `Repo`-shaped dependency on this package),
+	while this one returns `MergeAnalysis`'s slightly richer shape. If you're
+	already depending on `git-edge` for `threeWayMerge`, either is fine to
+	use for the pre-merge check; if you're not otherwise using `git-edge`,
+	this package's `analyzeMerge` avoids adding the dependency just for that.
+</Aside>

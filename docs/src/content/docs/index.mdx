@@ -1,0 +1,90 @@
+---
+title: git-fs-s3
+description: An isomorphic-git filesystem backend for S3-compatible object storage — run git repositories on serverless platforms with no disk and no git binary.
+template: splash
+hero:
+  tagline: Run git repositories on serverless platforms — no disk, no git binary, and no state between invocations.
+  actions:
+    - text: Get started
+      link: /git-fs-s3/getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/nandan-varma/git-fs-s3
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import PackageExports from '../../components/PackageExports.astro';
+
+<div class="diagram">
+```
+isomorphic-git  ──fs──►  git-fs-s3  ──►  ObjectStore  ──►  S3 / R2 / MinIO / memory
+```
+</div>
+
+isomorphic-git removed the need for a native `git` binary, but it still expects a
+filesystem. On Lambda, Vercel, or Cloudflare Workers you don't have a durable one.
+**git-fs-s3** maps the filesystem contract git actually uses onto object-storage
+keys, so a bare repository lives entirely in a bucket:
+
+```
+repos/alice/blog/HEAD
+repos/alice/blog/refs/heads/main
+repos/alice/blog/objects/e6/9de29bb2d1d6434b8b29ae775ad8c2e48c5391
+```
+
+Extracted from the git layer of a production git-hosting service, where it serves
+clones, pushes, and repo browsing directly against Cloudflare R2 from Vercel
+functions. Use it to build git-backed CMSes, notes apps with real version history,
+lightweight code forges, or agent sandboxes with auditable file history.
+
+## Three layers, usable independently
+
+<PackageExports
+	exports={[
+		{
+			path: '@nandan-varma/git-fs-s3',
+			description:
+				'The fs backend itself — <code>createGitFs</code>, object stores, caching, and retry.',
+			href: '/git-fs-s3/getting-started/',
+		},
+		{
+			path: '@nandan-varma/git-fs-s3/http',
+			description:
+				'A git smart-HTTP protocol handler (<code>upload-pack</code> / <code>receive-pack</code>) built on it.',
+			href: '/git-fs-s3/http/overview/',
+		},
+		{
+			path: '@nandan-varma/git-fs-s3/ops',
+			description:
+				'Higher-level git-hosting operations (branches, commits, diffs, history, merge) built on that.',
+			href: '/git-fs-s3/ops/overview/',
+		},
+	]}
+/>
+
+## Why this shape
+
+<CardGrid stagger>
+	<Card title="No disk required" icon="cloudflare">
+		Every read and write goes straight to S3/R2 — nothing touches local disk,
+		which is exactly what serverless platforms can't reliably offer between
+		invocations.
+	</Card>
+	<Card title="Production-tested" icon="rocket">
+		Extracted from a real git-hosting service's git layer — the caching,
+		retry, and repack logic exist because production traffic needed them,
+		not as speculative design.
+	</Card>
+	<Card title="Composable stores" icon="puzzle">
+		The whole backend is five methods (`get`/`put`/`delete`/`head`/`list`).
+		Implement `ObjectStore` for anything — GCS, Azure Blob, a database — and
+		every other piece keeps working.
+	</Card>
+	<Card title="Bring your own hosting" icon="server">
+		`/http` and `/ops` are framework-agnostic — plain functions over a
+		`Repo`, Fetch-API-shaped in and out. Wire them into whatever router you
+		already have.
+	</Card>
+</CardGrid>
