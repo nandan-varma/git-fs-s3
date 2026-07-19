@@ -17,6 +17,23 @@ export interface CacheOptions {
 	/** Entry time-to-live in milliseconds. Default 60 000. */
 	ttlMs?: number;
 	/**
+	 * Override the TTL for a specific key (get/head) or list prefix (list),
+	 * in milliseconds. Return `undefined` to fall back to `ttlMs`. Git refs
+	 * (`refs/heads/<branch>`, `HEAD`) are mutable — the same key's value
+	 * changes on every push — unlike content-addressed object keys, which
+	 * never change for a given key and are safe to cache for the full
+	 * `ttlMs`. Without this, a long `ttlMs` tuned for objects also caches
+	 * ref reads that long, so a warm process can keep serving a
+	 * pre-push ref value for the rest of that TTL even though nothing
+	 * changed *this* process's own cache (see `invalidate`) — it just never
+	 * knew to. Give ref-like keys a short override (a few seconds) instead:
+	 * a ref read is one small object, so re-reading it far more often than
+	 * `ttlMs` is cheap, and every read downstream of a fresh ref (tree,
+	 * commit, blob — all keyed by the sha it resolves to) still gets the
+	 * full-length cache/coalescing benefit.
+	 */
+	ttlForKey?: (key: string) => number | undefined;
+	/**
 	 * Also cache "key does not exist" results. Loose-object probes on packed
 	 * repositories are almost always misses, so this saves many round trips —
 	 * but only enable it when a single process is the only writer, otherwise
@@ -96,6 +113,7 @@ export function createCachedStore(
 	const maxBytes = options.maxBytes ?? 50 * 1024 * 1024;
 	const maxEntryBytes = options.maxEntryBytes ?? Math.ceil(maxBytes / 10);
 	const ttl = options.ttlMs ?? 60_000;
+	const ttlForKey = options.ttlForKey;
 	const cacheMisses = options.cacheMisses ?? false;
 	const cacheLists = options.cacheLists ?? false;
 	const coalesce = options.coalesce ?? true;
@@ -118,7 +136,9 @@ export function createCachedStore(
 	const pendingLists = new Map<string, Promise<ListResult>>();
 
 	const admit = (key: string, data: Uint8Array) => {
-		if (data.byteLength <= maxEntryBytes) cache.set(key, data.slice());
+		if (data.byteLength <= maxEntryBytes) {
+			cache.set(key, data.slice(), { ttl: ttlForKey?.(key) });
+		}
 	};
 
 	/** Drop list entries a write/delete at `key` may have made stale. */
@@ -156,7 +176,7 @@ export function createCachedStore(
 				if (fetched !== null) {
 					admit(key, fetched);
 				} else if (cacheMisses) {
-					cache.set(key, MISS);
+					cache.set(key, MISS, { ttl: ttlForKey?.(key) });
 				}
 				return fetched;
 			});
@@ -173,7 +193,7 @@ export function createCachedStore(
 		async delete(key: string): Promise<void> {
 			await store.delete(key);
 			if (cacheMisses) {
-				cache.set(key, MISS);
+				cache.set(key, MISS, { ttl: ttlForKey?.(key) });
 			} else {
 				cache.delete(key);
 			}
@@ -189,7 +209,9 @@ export function createCachedStore(
 			return coalesced(pendingHeads, key, async () => {
 				onMiss?.(key);
 				const stat = await store.head(key);
-				if (stat === null && cacheMisses) cache.set(key, MISS);
+				if (stat === null && cacheMisses) {
+					cache.set(key, MISS, { ttl: ttlForKey?.(key) });
+				}
 				return stat;
 			});
 		},
@@ -205,12 +227,17 @@ export function createCachedStore(
 			const result = await coalesced(pendingLists, listKey, async () => {
 				onMiss?.(prefix);
 				const fetched = await store.list(prefix, listOptions);
-				listCache.set(listKey, {
-					result: copyListResult(fetched),
-					prefix,
-					probe: listOptions?.limit === 1,
-					empty: fetched.objects.length === 0 && fetched.prefixes.length === 0,
-				});
+				listCache.set(
+					listKey,
+					{
+						result: copyListResult(fetched),
+						prefix,
+						probe: listOptions?.limit === 1,
+						empty:
+							fetched.objects.length === 0 && fetched.prefixes.length === 0,
+					},
+					{ ttl: ttlForKey?.(prefix) },
+				);
 				return fetched;
 			});
 			return copyListResult(result);

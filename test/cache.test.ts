@@ -86,6 +86,50 @@ describe("createCachedStore", () => {
 		expect(onMiss).toHaveBeenCalledTimes(1);
 		expect(onHit).toHaveBeenCalledTimes(1);
 	});
+
+	// Real (tiny) delays rather than fake timers: lru-cache captures a
+	// reference to the real global `performance` object at import time
+	// (see its perf.js), before any per-test `vi.useFakeTimers()` call can
+	// install a fake one, so advancing fake timers never moves its clock.
+	it("ttlForKey overrides ttlMs for matching keys (get/head)", async () => {
+		const inner = new MemoryObjectStore();
+		await inner.put("repo/refs/heads/main", new Uint8Array([1]));
+		await inner.put("repo/objects/aa/bb", new Uint8Array([2]));
+		const getSpy = vi.spyOn(inner, "get");
+		const cached = createCachedStore(inner, {
+			ttlMs: 10_000,
+			ttlForKey: (key) => (key.includes("/refs/") ? 20 : undefined),
+		});
+
+		await cached.get("repo/refs/heads/main");
+		await cached.get("repo/objects/aa/bb");
+		expect(getSpy).toHaveBeenCalledTimes(2);
+
+		// Past the short ref ttl but well within the long object ttl.
+		await new Promise((r) => setTimeout(r, 50));
+
+		await cached.get("repo/refs/heads/main");
+		expect(getSpy).toHaveBeenCalledTimes(3); // ref re-fetched
+
+		await cached.get("repo/objects/aa/bb");
+		expect(getSpy).toHaveBeenCalledTimes(3); // object still cached
+	});
+
+	it("ttlForKey overrides ttlMs for matching keys (list)", async () => {
+		const inner = new MemoryObjectStore();
+		await inner.put("repo/refs/heads/main", new Uint8Array([1]));
+		const listSpy = vi.spyOn(inner, "list");
+		const cached = createCachedStore(inner, {
+			cacheLists: true,
+			ttlMs: 10_000,
+			ttlForKey: (key) => (key.includes("/refs/") ? 20 : undefined),
+		});
+
+		await cached.list("repo/refs/heads/");
+		await new Promise((r) => setTimeout(r, 50));
+		await cached.list("repo/refs/heads/");
+		expect(listSpy).toHaveBeenCalledTimes(2);
+	});
 });
 
 describe("createCachedStore coalescing", () => {
