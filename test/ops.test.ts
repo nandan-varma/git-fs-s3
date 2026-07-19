@@ -2,6 +2,7 @@ import git from "isomorphic-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createGitFs,
+	GitObjectNotFoundError,
 	GitPathNotFoundError,
 	MemoryObjectStore,
 } from "../src/index.js";
@@ -13,6 +14,7 @@ import {
 	deleteBranchByName,
 	deleteFileFromBare,
 	fastForwardMerge,
+	getBlob,
 	getCommitDiff,
 	getCommitHistory,
 	getCommitLog,
@@ -26,6 +28,7 @@ import {
 	type Repo,
 	type ResultCache,
 	resultKeyPrefixes,
+	writeCommitToBare,
 } from "../src/ops/index.js";
 
 const author = authorNow("Test", "test@example.com");
@@ -105,6 +108,23 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		).rejects.toBeInstanceOf(GitPathNotFoundError);
 	});
 
+	it("wraps a missing blob as GitObjectNotFoundError but rethrows other errors as-is", async () => {
+		await expect(getBlob(repo, "a".repeat(40))).rejects.toBeInstanceOf(
+			GitObjectNotFoundError,
+		);
+
+		const readBlobSpy = vi
+			.spyOn(git, "readBlob")
+			.mockRejectedValue(new Error("object storage timeout"));
+		try {
+			await expect(getBlob(repo, "a".repeat(40))).rejects.toThrow(
+				"object storage timeout",
+			);
+		} finally {
+			readBlobSpy.mockRestore();
+		}
+	});
+
 	it("returns [] for an unborn branch instead of throwing", async () => {
 		expect(await getTreeFromRef(repo, { ref: "ghost" })).toEqual([]);
 		expect(await getCommitLog(repo, { ref: "ghost" })).toEqual([]);
@@ -166,6 +186,43 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(limited.truncated).toBe(true);
 	});
 
+	it("doesn't re-list a file in commits that left it unchanged", async () => {
+		const repo = makeRepo();
+		await seed(repo); // "first": README.md; "second": src/index.ts
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "third\n",
+			author,
+			files: [{ path: "other.txt", content: "unrelated\n" }],
+		});
+
+		const history = await getFileHistory(repo, {
+			ref: "main",
+			filePath: "README.md",
+		});
+		expect(history.entries.map((e) => e.message)).toEqual(["first"]);
+		expect(history.truncated).toBe(false);
+	});
+
+	it("reports truncated when the depth cap is hit before the chain is exhausted", async () => {
+		const repo = makeRepo();
+		await seed(repo); // 2 commits: "first", "second"
+
+		// walkDepth is max(maxDepth, limit) — both need to be small to actually
+		// cap the walk at 1 commit ("second"), whose parent ("first") then falls
+		// outside the fetched window.
+		const history = await getFileHistory(repo, {
+			ref: "main",
+			filePath: "README.md",
+			maxDepth: 1,
+			limit: 1,
+		});
+		// README.md was only touched by "first", one commit past the depth cap —
+		// the walk can't confirm that without reading past maxDepth, so it must
+		// report truncated rather than silently claiming no history.
+		expect(history.truncated).toBe(true);
+	});
+
 	it("manages branches with validation", async () => {
 		await createBranchFrom(repo, "feature", "main");
 		const branches = await listBranches(repo);
@@ -204,6 +261,13 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		});
 		expect(diff.files[0]?.patch).toContain("-console.log(1)");
 		expect(diff.files[0]?.patch).toContain("+console.log(2)");
+		// jsdiff's raw createTwoFilesPatch output leaks an "Index:"/"===" header
+		// git's own unified-diff format doesn't have — must be stripped.
+		expect(diff.files[0]?.patch).toContain(
+			"diff --git a/src/index.ts b/src/index.ts",
+		);
+		expect(diff.files[0]?.patch).not.toContain("Index:");
+		expect(diff.files[0]?.patch).not.toContain("===");
 
 		// Root commit: everything is an addition.
 		const rootSha = log[1]?.oid as string;
@@ -220,6 +284,26 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		});
 		const branchDiff = await getDiffBetweenRefs(repo, "main", "feature");
 		expect(branchDiff.files.map((f) => f.path)).toEqual(["feature.txt"]);
+
+		const featureBeforeDelete = await git.resolveRef({
+			...repo,
+			ref: "refs/heads/feature",
+		});
+		await deleteFileFromBare(repo, {
+			branch: "feature",
+			filePath: "feature.txt",
+			message: "remove feature.txt\n",
+			author,
+		});
+		const deleteDiff = await getDiffBetweenRefs(
+			repo,
+			featureBeforeDelete,
+			"feature",
+		);
+		expect(deleteDiff.files[0]).toMatchObject({
+			path: "feature.txt",
+			status: "deleted",
+		});
 	});
 
 	it("analyzes and fast-forwards merges", async () => {
@@ -266,5 +350,146 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 			expect(prefix.endsWith(":")).toBe(true);
 			expect(prefix).toContain(repo.gitdir);
 		}
+	});
+});
+
+describe("writeCommitToBare parent resolution", () => {
+	it("treats a NotFoundError parent ref as an empty repo / first commit", async () => {
+		const repo = makeRepo();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+
+		const commitOid = await writeCommitToBare(repo, {
+			branch: "main",
+			message: "first\n",
+			author,
+			buildTree: async (parentTreeOid) => {
+				expect(parentTreeOid).toBeUndefined();
+				const blobOid = await git.writeBlob({
+					...repo,
+					blob: new TextEncoder().encode("hello\n"),
+				});
+				return git.writeTree({
+					...repo,
+					tree: [{ path: "f.txt", mode: "100644", type: "blob", oid: blobOid }],
+				});
+			},
+		});
+
+		expect(await git.resolveRef({ ...repo, ref: "refs/heads/main" })).toBe(
+			commitOid,
+		);
+	});
+
+	it("propagates a non-NotFoundError instead of treating it as an empty repo", async () => {
+		const repo = makeRepo();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+		const resolveRefSpy = vi
+			.spyOn(git, "resolveRef")
+			.mockRejectedValue(new Error("object storage timeout"));
+
+		try {
+			await expect(
+				writeCommitToBare(repo, {
+					branch: "main",
+					message: "first\n",
+					author,
+					buildTree: async () => {
+						throw new Error("buildTree should not run");
+					},
+				}),
+			).rejects.toThrow("object storage timeout");
+		} finally {
+			resolveRefSpy.mockRestore();
+		}
+	});
+});
+
+describe("getLastCommitsForTree edge cases", () => {
+	it("attributes each entry to the commit that actually changed it, skipping ones that didn't", async () => {
+		const repo = makeRepo();
+		await seed(repo); // "first": README.md + src/index.ts; "second": src/index.ts
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "third\n",
+			author,
+			files: [{ path: "README.md", content: "# updated\n" }],
+		});
+
+		const last = await getLastCommitsForTree(repo, {
+			ref: "main",
+			treePath: "",
+		});
+		// README.md changed again in "third" — not still attributed to "first".
+		expect(last["README.md"]?.message).toBe("third");
+		// src/index.ts wasn't touched by "third" — still attributed to "second",
+		// not incorrectly bumped to the newest commit that happened to touch a
+		// sibling path.
+		expect(last.src?.message).toBe("second");
+	});
+
+	it("returns {} when treePath resolves to a blob, not a directory", async () => {
+		const repo = makeRepo();
+		await seed(repo);
+
+		const last = await getLastCommitsForTree(repo, {
+			ref: "main",
+			treePath: "README.md",
+		});
+		expect(last).toEqual({});
+	});
+
+	it("returns {} when treePath doesn't exist", async () => {
+		const repo = makeRepo();
+		await seed(repo);
+
+		const last = await getLastCommitsForTree(repo, {
+			ref: "main",
+			treePath: "no/such/dir",
+		});
+		expect(last).toEqual({});
+	});
+
+	it("returns {} for an empty repo", async () => {
+		const repo = makeRepo();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+
+		const last = await getLastCommitsForTree(repo, {
+			ref: "main",
+			treePath: "",
+		});
+		expect(last).toEqual({});
+	});
+
+	it("resolves last commits within a subdirectory", async () => {
+		const repo = makeRepo();
+		await seed(repo);
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "add nested file\n",
+			author,
+			files: [{ path: "src/nested/deep.ts", content: "x\n" }],
+		});
+
+		const last = await getLastCommitsForTree(repo, {
+			ref: "main",
+			treePath: "src",
+		});
+		expect(last["src/index.ts"]?.message).toBe("second");
+		expect(last["src/nested"]?.message).toBe("add nested file");
 	});
 });
