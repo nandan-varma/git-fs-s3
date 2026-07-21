@@ -53,14 +53,14 @@ for diverged branches — that's intentionally out of scope here, since it
 needs either a worktree (isomorphic-git's own `git.merge`) or an
 object-level merge implementation.
 
-[`@nandan-varma/git-edge`](https://nandan-varma.github.io/git-edge/)'s
+[`git-edge`](https://nandan-varma.github.io/git-edge/)'s
 `threeWayMerge` is exactly that: a real three-way content merge that works
 directly on the object graph — no checkout, no worktree — specifically
 built to compose with this package for repos that live entirely in object
 storage with no durable disk to check out onto.
 
 ```typescript
-import { threeWayMerge, GitMergeConflictError } from '@nandan-varma/git-edge';
+import { threeWayMerge, GitMergeConflictError } from 'git-edge';
 
 try {
   const { commitOid } = await threeWayMerge(repo, sourceBranch, targetBranch);
