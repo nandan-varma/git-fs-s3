@@ -10,20 +10,20 @@ import { Tabs, TabItem, Aside, Steps } from '@astrojs/starlight/components';
 <Tabs>
 	<TabItem label="npm">
 		```sh
-		npm install @nandan-varma/git-fs-s3 isomorphic-git
+		npm install git-fs-s3 isomorphic-git
 		# for the S3 store (any S3-compatible provider):
 		npm install @aws-sdk/client-s3
 		```
 	</TabItem>
 	<TabItem label="pnpm">
 		```sh
-		pnpm add @nandan-varma/git-fs-s3 isomorphic-git
+		pnpm add git-fs-s3 isomorphic-git
 		pnpm add @aws-sdk/client-s3
 		```
 	</TabItem>
 	<TabItem label="yarn">
 		```sh
-		yarn add @nandan-varma/git-fs-s3 isomorphic-git
+		yarn add git-fs-s3 isomorphic-git
 		yarn add @aws-sdk/client-s3
 		```
 	</TabItem>
@@ -44,7 +44,7 @@ import { Tabs, TabItem, Aside, Steps } from '@astrojs/starlight/components';
 
    ```typescript
    import { S3Client } from '@aws-sdk/client-s3';
-   import { S3ObjectStore } from '@nandan-varma/git-fs-s3/s3';
+   import { S3ObjectStore } from 'git-fs-s3/s3';
 
    const store = new S3ObjectStore({
      client: new S3Client({
@@ -62,7 +62,7 @@ import { Tabs, TabItem, Aside, Steps } from '@astrojs/starlight/components';
 2. Turn the store into an isomorphic-git-compatible `fs`.
 
    ```typescript
-   import { createGitFs } from '@nandan-varma/git-fs-s3';
+   import { createGitFs } from 'git-fs-s3';
 
    const fs = createGitFs(store, {
      prefix: 'repos/alice/blog',
@@ -88,7 +88,7 @@ No object storage needed — useful for unit tests and quick experiments.
 
 ```typescript
 import git from 'isomorphic-git';
-import { createGitFs, MemoryObjectStore } from '@nandan-varma/git-fs-s3';
+import { createGitFs, MemoryObjectStore } from 'git-fs-s3';
 
 const fs = createGitFs(new MemoryObjectStore());
 await git.init({ fs, gitdir: '/repo.git', bare: true });

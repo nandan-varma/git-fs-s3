@@ -17,8 +17,8 @@ import {
   createCachedStore,
   createGitFs,
   createRetryStore,
-} from '@nandan-varma/git-fs-s3';
-import { S3ObjectStore } from '@nandan-varma/git-fs-s3/s3';
+} from 'git-fs-s3';
+import { S3ObjectStore } from 'git-fs-s3/s3';
 
 const store = createCachedStore(
   createRetryStore(

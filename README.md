@@ -1,8 +1,8 @@
 # git-fs-s3
 
-[![npm version](https://img.shields.io/npm/v/@nandan-varma/git-fs-s3.svg)](https://www.npmjs.com/package/@nandan-varma/git-fs-s3)
+[![npm version](https://img.shields.io/npm/v/git-fs-s3.svg)](https://www.npmjs.com/package/git-fs-s3)
 [![CI](https://github.com/nandan-varma/git-fs-s3/actions/workflows/ci.yml/badge.svg)](https://github.com/nandan-varma/git-fs-s3/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/@nandan-varma/git-fs-s3.svg)](LICENSE)
+[![license](https://img.shields.io/npm/l/git-fs-s3.svg)](LICENSE)
 
 An [isomorphic-git](https://isomorphic-git.org) filesystem backend for S3-compatible object storage — AWS S3, Cloudflare R2, MinIO, Backblaze B2. Run git repositories on serverless platforms with **no disk, no git binary, and no state between invocations**.
 
@@ -31,7 +31,7 @@ Use it to build git-backed CMSes, notes apps with real version history, lightwei
 ## Install
 
 ```bash
-npm install @nandan-varma/git-fs-s3 isomorphic-git
+npm install git-fs-s3 isomorphic-git
 # for the S3 store (any S3-compatible provider):
 npm install @aws-sdk/client-s3
 ```
@@ -43,8 +43,8 @@ npm install @aws-sdk/client-s3
 ```typescript
 import { S3Client } from "@aws-sdk/client-s3";
 import git from "isomorphic-git";
-import { createCachedStore, createGitFs } from "@nandan-varma/git-fs-s3";
-import { S3ObjectStore } from "@nandan-varma/git-fs-s3/s3";
+import { createCachedStore, createGitFs } from "git-fs-s3";
+import { S3ObjectStore } from "git-fs-s3/s3";
 
 const store = new S3ObjectStore({
   client: new S3Client({
@@ -72,7 +72,7 @@ const log = await git.log({ fs, gitdir: "/git", ref: "main" });
 
 ```typescript
 import git from "isomorphic-git";
-import { createGitFs, MemoryObjectStore } from "@nandan-varma/git-fs-s3";
+import { createGitFs, MemoryObjectStore } from "git-fs-s3";
 
 const fs = createGitFs(new MemoryObjectStore());
 await git.init({ fs, gitdir: "/repo.git", bare: true });
@@ -91,8 +91,8 @@ import {
   createCachedStore,
   createGitFs,
   createRetryStore,
-} from "@nandan-varma/git-fs-s3";
-import { S3ObjectStore } from "@nandan-varma/git-fs-s3/s3";
+} from "git-fs-s3";
+import { S3ObjectStore } from "git-fs-s3/s3";
 
 const store = createCachedStore(
   createRetryStore(
@@ -185,7 +185,7 @@ Wraps any store with exponential-backoff retries and a per-instance circuit brea
 
 ## Git smart-HTTP
 
-`@nandan-varma/git-fs-s3/http` implements the git smart-HTTP protocol (`info/refs`, `upload-pack`, `receive-pack`) as plain functions over a `Repo` — no framework assumptions, Fetch-API-shaped inputs/outputs. Extracted from the same production git-hosting service's HTTP layer, so it's what actually serves `git clone`/`git push` over HTTPS: pkt-line framing, side-band-64k packfile chunking (required once a client like isomorphic-git negotiates it — it always demuxes the response), CAS-checked ref updates, and pack consolidation.
+`git-fs-s3/http` implements the git smart-HTTP protocol (`info/refs`, `upload-pack`, `receive-pack`) as plain functions over a `Repo` — no framework assumptions, Fetch-API-shaped inputs/outputs. Extracted from the same production git-hosting service's HTTP layer, so it's what actually serves `git clone`/`git push` over HTTPS: pkt-line framing, side-band-64k packfile chunking (required once a client like isomorphic-git negotiates it — it always demuxes the response), CAS-checked ref updates, and pack consolidation.
 
 ```typescript
 import {
@@ -194,7 +194,7 @@ import {
   parseReceivePackBody,
   applyReceivePack,
   receivePackResponse,
-} from "@nandan-varma/git-fs-s3/http";
+} from "git-fs-s3/http";
 
 // GET .../info/refs?service=git-upload-pack — auth/authz is the caller's job
 export async function infoRefs(repo: Repo, service: "git-upload-pack" | "git-receive-pack") {
@@ -232,7 +232,7 @@ Every client-supplied ref name in a push is validated with `isSafeFullRefName` (
 
 ## App-layer git operations
 
-`@nandan-varma/git-fs-s3/ops` is a higher-level layer for building a git-hosting UI on top of `createGitFs` — the operations a repo browser / PR flow actually needs, each taking a `Repo` (`{ fs, gitdir, cache? }`) plus an optional `OpsHooks` (`{ resultCache?, step?, onNote?, prefetchPacks? }`) for the same timing/caching seam `GitFs` and `/http` use:
+`git-fs-s3/ops` is a higher-level layer for building a git-hosting UI on top of `createGitFs` — the operations a repo browser / PR flow actually needs, each taking a `Repo` (`{ fs, gitdir, cache? }`) plus an optional `OpsHooks` (`{ resultCache?, step?, onNote?, prefetchPacks? }`) for the same timing/caching seam `GitFs` and `/http` use:
 
 - **Branches** — `listBranches`, `createBranchFrom`, `deleteBranchByName`.
 - **Commits** — `commitFilesToBare` (write one or more files as a single commit against a branch, creating it if new), `deleteFileFromBare`, `authorNow`.
@@ -242,7 +242,7 @@ Every client-supplied ref name in a push is validated with `isSafeFullRefName` (
 - **Merge** — `analyzeMerge` (fast-forward/diverged pre-check — not a real content-conflict check, see its doc comment) and `fastForwardMerge`.
 
 ```typescript
-import { commitFilesToBare, authorNow, getCommitLog } from "@nandan-varma/git-fs-s3/ops";
+import { commitFilesToBare, authorNow, getCommitLog } from "git-fs-s3/ops";
 
 await commitFilesToBare(repo, {
   branch: "main",

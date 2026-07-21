@@ -16,7 +16,7 @@ Fetch-API route handler.
    these handlers assume it already happened.
 
    ```typescript
-   import { handleInfoRefs } from '@nandan-varma/git-fs-s3/http';
+   import { handleInfoRefs } from 'git-fs-s3/http';
 
    export async function infoRefs(repo: Repo, service: 'git-upload-pack' | 'git-receive-pack') {
      const { status, headers, body } = await handleInfoRefs(repo, { service });
@@ -27,7 +27,7 @@ Fetch-API route handler.
 2. **Serve a clone or fetch.**
 
    ```typescript
-   import { handleUploadPack } from '@nandan-varma/git-fs-s3/http';
+   import { handleUploadPack } from 'git-fs-s3/http';
 
    export async function uploadPack(repo: Repo, request: Request) {
      const body = new Uint8Array(await request.arrayBuffer());
@@ -39,7 +39,7 @@ Fetch-API route handler.
 3. **Accept a push.**
 
    ```typescript
-   import { applyReceivePack, parseReceivePackBody, receivePackResponse } from '@nandan-varma/git-fs-s3/http';
+   import { applyReceivePack, parseReceivePackBody, receivePackResponse } from 'git-fs-s3/http';
 
    export async function receivePack(repo: Repo, request: Request) {
      const body = new Uint8Array(await request.arrayBuffer());

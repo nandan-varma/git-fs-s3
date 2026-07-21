@@ -102,7 +102,7 @@ implementation — read it first. It's also the store used throughout this
 package's own test suite, and the one you'll reach for in yours:
 
 ```typescript
-import { createGitFs, MemoryObjectStore } from '@nandan-varma/git-fs-s3';
+import { createGitFs, MemoryObjectStore } from 'git-fs-s3';
 
 const fs = createGitFs(new MemoryObjectStore());
 ```
@@ -122,7 +122,7 @@ The one storage backend shipped out of the box, over `@aws-sdk/client-s3`
 consumers who don't need it don't pay for it).
 
 ```typescript
-import { S3ObjectStore } from '@nandan-varma/git-fs-s3/s3';
+import { S3ObjectStore } from 'git-fs-s3/s3';
 
 const store = new S3ObjectStore({
   client, // reuse one S3Client — see the note below

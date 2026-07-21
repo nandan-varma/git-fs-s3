@@ -6,7 +6,7 @@ description: Why the /http module exists, its shape, and the HttpHooks instrumen
 import { Aside, CardGrid, Card } from '@astrojs/starlight/components';
 import RuntimeSupport from '../../../components/RuntimeSupport.astro';
 
-`@nandan-varma/git-fs-s3/http` implements the git smart-HTTP protocol
+`git-fs-s3/http` implements the git smart-HTTP protocol
 (`info/refs`, `upload-pack`, `receive-pack`) as plain functions over a
 `Repo` — no framework assumptions, Fetch-API-shaped inputs and outputs.
 Extracted from the same production git-hosting service's HTTP layer, so
@@ -25,7 +25,7 @@ pack consolidation.
 
 This module is pure Web APIs (`Uint8Array`, `Web Crypto`, `CompressionStream`)
 — no `node:crypto`, no `node:zlib`, no `Buffer`. It runs anywhere
-`@nandan-varma/git-fs-s3` itself does.
+`git-fs-s3` itself does.
 
 ## The three request types
 
