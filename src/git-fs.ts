@@ -1,6 +1,6 @@
 import { LRUCache } from "lru-cache";
 import { enoent, enotdir, enotempty, eperm } from "./errors.js";
-import { normalizePath } from "./path.js";
+import { normalizePath, toKey as toKeyWithPrefix } from "./path.js";
 import type {
 	Encoding,
 	GitFsClient,
@@ -100,10 +100,7 @@ export function createGitFs(
 	const useLooseHints = options.looseObjectHints ?? false;
 	const onNote = options.onNote;
 
-	const toKey = (path: string): string => {
-		if (prefix === "") return path;
-		return path === "" ? prefix : `${prefix}/${path}`;
-	};
+	const toKey = (path: string): string => toKeyWithPrefix(prefix, path);
 
 	/**
 	 * Per-gitdir "does any loose object exist" hint. Entries are only created

@@ -55,15 +55,6 @@ export function concat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
 	return out;
 }
 
-/** Extract a subarray (alias for Uint8Array.subarray for readability). */
-export function slice(
-	data: Uint8Array,
-	start: number,
-	end?: number,
-): Uint8Array {
-	return data.subarray(start, end);
-}
-
 // ---------------------------------------------------------------------------
 // Encoding
 // ---------------------------------------------------------------------------
