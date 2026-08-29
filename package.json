@@ -95,8 +95,7 @@
     "tsup": "^8.5.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.3",
-    "diff": "^7.0.0",
-    "@types/diff": "^7.0.0"
+    "diff": "^9.0.0"
   },
   "allowScripts": {
     "esbuild@0.27.7": true
