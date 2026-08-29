@@ -63,21 +63,51 @@ Fetch-API route handler.
 
 </Steps>
 
-## Wiring loose-object detection into upload-pack
+## Wiring loose-object detection and pack prefetch into upload-pack
 
 `handleUploadPack`'s second argument accepts a `beforeWalk` hook — fire it
-right before the reachability walk so a fully packed repo's clone doesn't
-pay a doomed loose-object probe per object (see
-[the production stack guide](/git-fs-s3/guides/production-stack/#loose-object-hints)):
+right before the reachability walk. Two independent optimizations belong
+here, and it's easy to wire only the first and miss the second:
+
+1. **Loose-object detection**, so a fully packed repo's clone doesn't pay a
+   doomed loose-object probe per object (see
+   [the production stack guide](/git-fs-s3/guides/production-stack/#loose-object-hints)).
+2. **Pack prefetch**, so a repo sitting on more than one pack (the normal
+   state between repacks — the single-pack fast path below only covers an
+   already-consolidated repo) doesn't pay one R2/S3 round trip *per pack*,
+   serially, as the walk's single-threaded early stages happen to discover
+   they need it. The walk itself is a sequential commit chain — you only
+   learn the next object to fetch after reading the current one — so without
+   this, pack downloads end up serialized behind that chain instead of
+   running as one parallel batch upfront. This is the same shape of fix
+   `getCommitLog`/`getLastCommitsForTree`/`getFileHistory` (`/ops`) already
+   apply via `OpsHooks.prefetch` — `beforeWalk` here is the equivalent seam
+   for `/http`.
 
 ```typescript
 await handleUploadPack(
   repo,
   body,
-  { beforeWalk: () => (repo.fs as GitFs).detectLooseObjects(repo.gitdir) },
+  {
+    beforeWalk: () =>
+      Promise.all([
+        (repo.fs as GitFs).detectLooseObjects(repo.gitdir),
+        (repo.fs as GitFs).prefetchPacks(repo.gitdir),
+      ]).then(() => undefined),
+  },
   hooks
 );
 ```
+
+<Aside type="caution" title="Don't wire only one of these">
+	A real production gap: a consumer of this package wired
+	`detectLooseObjects` into `beforeWalk` but not `prefetchPacks` — the code
+	looked correct (the reachability walk itself is fully, correctly
+	parallelized internally), so this was invisible in review and only
+	surfaced under live profiling against a real bucket. Measured on a 2-pack
+	repo: the reachability walk alone dropped from 744.7ms to 20.1ms once
+	`prefetchPacks` was added.
+</Aside>
 
 <Aside type="tip">
 	The single-pack fast path (a fresh clone of an already-consolidated repo)

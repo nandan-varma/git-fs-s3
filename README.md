@@ -239,7 +239,7 @@ Every client-supplied ref name in a push is validated with `isSafeFullRefName` (
 - **Trees** — `upsertTree`/`deleteFromTree` (overlay blobs onto a tree, return the new root oid), `listTreeEntries`, `findTreeEntry`.
 - **History** — `getCommitLog`/`getCommitHistory` (cached, resumable commit-chain walks — reuses a previously-walked prefix instead of re-walking from HEAD), `getFileContent`/`getFileFromRef`/`getTreeFromRef`, `getFileHistory` (per-file commit history), `getLastCommitsForTree` (the "last commit" column on a directory listing, batched two-phase prefetch-then-resolve).
 - **Diff** — `getCommitDiff`/`getDiffBetweenRefs`, unified-diff patches via the `diff` package (optional peer dependency).
-- **Merge** — `analyzeMerge` (fast-forward/diverged pre-check — not a real content-conflict check, see its doc comment) and `fastForwardMerge`.
+- **Merge** — `analyzeMerge` (fast-forward/diverged pre-check — not a real content-conflict check, see its doc comment) and `fastForwardMerge`. Neither does a real (non-fast-forward) content merge — for that, see [`git-edge`](https://www.npmjs.com/package/git-edge)'s `threeWayMerge`, an object-level three-way merge with no worktree needed, built to compose with this package (same `{ fs, gitdir, cache? }` shape) without either importing the other.
 
 ```typescript
 import { commitFilesToBare, authorNow, getCommitLog } from "git-fs-s3/ops";
