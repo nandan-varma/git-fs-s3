@@ -39,6 +39,27 @@ function hasRecursiveFileLister(
 	);
 }
 
+type PromisesFs = {
+	readFile(path: string, encoding: "utf8"): Promise<string | Uint8Array>;
+};
+
+// Repo.fs is typed as isomorphic-git's own fs union (promise- or
+// callback-based) since that's what git.readTree's signature allows, but
+// every fs this package actually constructs (git-fs.ts) is promise-based —
+// this just keeps the callback-style branch honest instead of crashing on
+// it. Shared by every loose-ref fast path below instead of each repeating
+// the same cast + presence check.
+function getPromisesFs(fs: Repo["fs"]): PromisesFs | null {
+	const promises = (fs as { promises?: PromisesFs }).promises;
+	return promises ?? null;
+}
+
+function decodeFileContent(content: string | Uint8Array): string {
+	return typeof content === "string"
+		? content
+		: new TextDecoder().decode(content);
+}
+
 /**
  * Lists loose branch names without isomorphic-git's recursive readdir/stat
  * traversal. Object stores already return only leaf keys in a recursive LIST,
@@ -55,13 +76,7 @@ async function listLooseBranches(repo: Repo): Promise<string[] | null> {
 /** Read packed branch refs so the object-store fast path preserves Git semantics. */
 async function readPackedBranches(repo: Repo): Promise<Map<string, string>> {
 	if (!hasRecursiveFileLister(repo.fs)) return new Map();
-	const promisesFs = (
-		repo.fs as {
-			promises?: {
-				readFile(path: string, encoding: "utf8"): Promise<string | Uint8Array>;
-			};
-		}
-	).promises;
+	const promisesFs = getPromisesFs(repo.fs);
 	if (!promisesFs) return new Map();
 	try {
 		const content = await promisesFs.readFile(
@@ -69,10 +84,7 @@ async function readPackedBranches(repo: Repo): Promise<Map<string, string>> {
 			"utf8",
 		);
 		const refs = new Map<string, string>();
-		for (const line of (typeof content === "string"
-			? content
-			: new TextDecoder().decode(content)
-		).split("\n")) {
+		for (const line of decodeFileContent(content).split("\n")) {
 			const match = /^([0-9a-f]{40}) refs\/heads\/(.+)$/i.exec(line);
 			if (match?.[1] && match[2] && isSafeBranchName(match[2])) {
 				refs.set(match[2], match[1]);
@@ -87,19 +99,11 @@ async function readPackedBranches(repo: Repo): Promise<Map<string, string>> {
 /** Read the symbolic HEAD directly when the object-store fs is available. */
 async function getCurrentLooseBranch(repo: Repo): Promise<string | null> {
 	if (!hasRecursiveFileLister(repo.fs)) return null;
-	const promisesFs = (
-		repo.fs as {
-			promises?: {
-				readFile(path: string, encoding: "utf8"): Promise<string | Uint8Array>;
-			};
-		}
-	).promises;
+	const promisesFs = getPromisesFs(repo.fs);
 	if (!promisesFs) return null;
 	try {
 		const content = await promisesFs.readFile(`${repo.gitdir}/HEAD`, "utf8");
-		const head = (
-			typeof content === "string" ? content : new TextDecoder().decode(content)
-		).trim();
+		const head = decodeFileContent(content).trim();
 		const match = /^ref: refs\/heads\/(.+)$/.exec(head);
 		return match?.[1] && isSafeBranchName(match[1]) ? match[1] : null;
 	} catch {
@@ -122,29 +126,14 @@ export async function resolveLooseRefFast(
 	repo: Repo,
 	ref: string,
 ): Promise<string> {
-	// Repo.fs is typed as isomorphic-git's own fs union (promise- or
-	// callback-based) since that's what git.readTree's signature allows, but
-	// every fs this package actually constructs (git-fs.ts) is promise-based
-	// — the runtime check just keeps the callback-style branch honest instead
-	// of crashing on it.
-	const promisesFs = (
-		repo.fs as {
-			promises?: {
-				readFile(path: string, encoding: "utf8"): Promise<string | Uint8Array>;
-			};
-		}
-	).promises;
+	const promisesFs = getPromisesFs(repo.fs);
 	if (promisesFs) {
 		try {
 			const content = await promisesFs.readFile(
 				`${repo.gitdir}/${ref}`,
 				"utf8",
 			);
-			const oid = (
-				typeof content === "string"
-					? content
-					: new TextDecoder().decode(content)
-			).trim();
+			const oid = decodeFileContent(content).trim();
 			if (FULL_SHA_RE.test(oid)) return oid;
 		} catch {
 			// Not a loose file (packed-refs, or genuinely absent) — fall through.

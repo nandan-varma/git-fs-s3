@@ -73,6 +73,45 @@ function summarizeDiff(files: DiffFile[]): DiffResult {
 	};
 }
 
+type BlobContent = { isBinary: boolean; text: string; bytes: Uint8Array };
+
+/**
+ * Build one `DiffFile` from a path's before/after content — `before: null`
+ * for an added file, `after: null` for a deleted one, both present for a
+ * modification. The shared core of walkTreeDiff's three branches and
+ * getCommitDiff's root-commit case (every file is an addition there, with no
+ * two-tree walk to drive it), which each used to duplicate this field
+ * construction independently.
+ */
+function buildDiffFile(
+	path: string,
+	status: DiffFile["status"],
+	before: BlobContent | null,
+	after: BlobContent | null,
+): DiffFile {
+	const isBinary = !!(before?.isBinary || after?.isBinary);
+	return {
+		path,
+		status,
+		additions: !isBinary && after ? countContentLines(after.text) : 0,
+		deletions: !isBinary && before ? countContentLines(before.text) : 0,
+		patch: isBinary
+			? ""
+			: createUnifiedPatch({
+					path,
+					before: before?.text ?? "",
+					after: after?.text ?? "",
+					oldPath: before ? undefined : "/dev/null",
+					newPath: after ? undefined : "/dev/null",
+				}),
+		isBinary,
+		oldContent: before && isBinary ? toBase64(before.bytes) : undefined,
+		newContent: after && isBinary ? toBase64(after.bytes) : undefined,
+		oldSize: before?.bytes.length,
+		newSize: after?.bytes.length,
+	};
+}
+
 /**
  * Walk two trees (oldOid -> newOid) and return one DiffFile per changed path
  * — the shared core of both {@link getCommitDiff} (parent -> commit) and
@@ -95,46 +134,14 @@ async function walkTreeDiff(
 				const oidA = A ? await A.oid() : "";
 				const { blob } = await git.readBlob({ ...repo, oid: oidA });
 				const before = detectBlobContent(blob);
-				return {
-					path: filepath,
-					status: "deleted" as const,
-					additions: 0,
-					deletions: before.isBinary ? 0 : countContentLines(before.text),
-					patch: before.isBinary
-						? ""
-						: createUnifiedPatch({
-								path: filepath,
-								before: before.text,
-								after: "",
-								newPath: "/dev/null",
-							}),
-					isBinary: before.isBinary,
-					oldContent: before.isBinary ? toBase64(before.bytes) : undefined,
-					oldSize: before.bytes.length,
-				};
+				return buildDiffFile(filepath, "deleted", before, null);
 			}
 
 			if (!typeA && typeB) {
 				const oidB = B ? await B.oid() : "";
 				const { blob } = await git.readBlob({ ...repo, oid: oidB });
 				const after = detectBlobContent(blob);
-				return {
-					path: filepath,
-					status: "added" as const,
-					additions: after.isBinary ? 0 : countContentLines(after.text),
-					deletions: 0,
-					patch: after.isBinary
-						? ""
-						: createUnifiedPatch({
-								path: filepath,
-								before: "",
-								after: after.text,
-								oldPath: "/dev/null",
-							}),
-					isBinary: after.isBinary,
-					newContent: after.isBinary ? toBase64(after.bytes) : undefined,
-					newSize: after.bytes.length,
-				};
+				return buildDiffFile(filepath, "added", null, after);
 			}
 
 			const [oidA, oidB] = await Promise.all([
@@ -149,26 +156,7 @@ async function walkTreeDiff(
 				]);
 				const before = detectBlobContent(blobA);
 				const after = detectBlobContent(blobB);
-				const isBinary = before.isBinary || after.isBinary;
-
-				return {
-					path: filepath,
-					status: "modified" as const,
-					additions: isBinary ? 0 : countContentLines(after.text),
-					deletions: isBinary ? 0 : countContentLines(before.text),
-					patch: isBinary
-						? ""
-						: createUnifiedPatch({
-								path: filepath,
-								before: before.text,
-								after: after.text,
-							}),
-					isBinary,
-					oldContent: isBinary ? toBase64(before.bytes) : undefined,
-					newContent: isBinary ? toBase64(after.bytes) : undefined,
-					oldSize: before.bytes.length,
-					newSize: after.bytes.length,
-				};
+				return buildDiffFile(filepath, "modified", before, after);
 			}
 
 			return null;
@@ -216,23 +204,7 @@ export async function getCommitDiff(
 				entries.map(async ({ path, oid }) => {
 					const { blob } = await git.readBlob({ ...repo, oid });
 					const after = detectBlobContent(blob);
-					return {
-						path,
-						status: "added" as const,
-						additions: after.isBinary ? 0 : countContentLines(after.text),
-						deletions: 0,
-						patch: after.isBinary
-							? ""
-							: createUnifiedPatch({
-									path,
-									before: "",
-									after: after.text,
-									oldPath: "/dev/null",
-								}),
-						isBinary: after.isBinary,
-						newContent: after.isBinary ? toBase64(after.bytes) : undefined,
-						newSize: after.bytes.length,
-					};
+					return buildDiffFile(path, "added", null, after);
 				}),
 			);
 

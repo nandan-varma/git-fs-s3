@@ -6,7 +6,7 @@
  */
 
 import git from "isomorphic-git";
-import { concat, deflate, encodeUtf8, sha1 } from "../edge-utils.js";
+import { concat, deflate, encodeUtf8, fromHex, sha1 } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
 import { collectReachableOids } from "./reachability.js";
 import { type HttpHooks, rawFs } from "./types.js";
@@ -141,15 +141,6 @@ async function buildVerifiedPack(
 	const packBody = concat(...chunks);
 	const trailer = fromHex(await sha1(packBody));
 	return concat(packBody, trailer);
-}
-
-/** Hex string → Uint8Array. */
-function fromHex(hex: string): Uint8Array {
-	const bytes = new Uint8Array(hex.length / 2);
-	for (let i = 0; i < bytes.length; i++) {
-		bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-	}
-	return bytes;
 }
 
 /**

@@ -95,26 +95,45 @@ export async function indexIncomingPack(
 	];
 }
 
+/**
+ * Validate a ref name and compare-and-swap it against its claimed current
+ * oid. Returns the failure result to report if either check fails, or
+ * `null` when both pass — shared by the preflight check (`validateRefUpdates`,
+ * run before the possibly-slow pack indexing/graph-walk work, purely to
+ * avoid doing that work for an update already doomed to fail) and the real
+ * atomicity guarantee (`applyRefUpdates`, run again right before writing,
+ * since a concurrent push could have moved the ref in the time that work
+ * took).
+ */
+async function checkRefCas(
+	repo: Repo,
+	refName: string,
+	oldOid: string,
+): Promise<RefUpdateResult | null> {
+	if (!isSafeFullRefName(refName)) {
+		return { refName, ok: false, reason: "invalid ref name" };
+	}
+	const currentOid = await git
+		.resolveRef({ ...repo, ref: refName })
+		.catch(() => ZERO_OID);
+	return currentOid === oldOid
+		? null
+		: {
+				refName,
+				ok: false,
+				reason: "non-fast-forward, ref updated by another push",
+			};
+}
+
 async function validateRefUpdates(
 	repo: Repo,
 	refUpdates: RefUpdateCommand[],
 ): Promise<RefUpdateResult[]> {
 	return Promise.all(
-		refUpdates.map(async ({ oldOid, refName }) => {
-			if (!isSafeFullRefName(refName)) {
-				return { refName, ok: false, reason: "invalid ref name" };
-			}
-			const currentOid = await git
-				.resolveRef({ ...repo, ref: refName })
-				.catch(() => ZERO_OID);
-			return currentOid === oldOid
-				? { refName, ok: true }
-				: {
-						refName,
-						ok: false,
-						reason: "non-fast-forward, ref updated by another push",
-					};
-		}),
+		refUpdates.map(
+			async ({ oldOid, refName }) =>
+				(await checkRefCas(repo, refName, oldOid)) ?? { refName, ok: true },
+		),
 	);
 }
 
@@ -131,21 +150,8 @@ export async function applyRefUpdates(
 	return runStep(hooks, "apply ref updates", () =>
 		Promise.all(
 			refUpdates.map(async ({ oldOid, newOid, refName }) => {
-				if (!isSafeFullRefName(refName)) {
-					return { refName, ok: false, reason: "invalid ref name" };
-				}
-
-				const currentOid = await git
-					.resolveRef({ ...repo, ref: refName })
-					.catch(() => ZERO_OID);
-
-				if (currentOid !== oldOid) {
-					return {
-						refName,
-						ok: false,
-						reason: "non-fast-forward, ref updated by another push",
-					};
-				}
+				const failure = await checkRefCas(repo, refName, oldOid);
+				if (failure) return failure;
 
 				if (newOid === ZERO_OID) {
 					await git.deleteRef({ ...repo, ref: refName }).catch(() => {});
