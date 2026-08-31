@@ -8,11 +8,10 @@ export type GitService = "git-upload-pack" | "git-receive-pack";
 
 /** All refs with resolved oids, plus the symref HEAD should advertise. */
 export async function listAllRefs(repo: Repo, defaultBranch = "main") {
-	// Fetch branch/tag lists and HEAD in parallel
-	const [branches, tags, headOid, headSymref] = await Promise.all([
+	// Fetch branch/tag lists and HEAD's symref target in parallel
+	const [branches, tags, headSymref] = await Promise.all([
 		git.listBranches(repo),
 		git.listTags(repo),
-		git.resolveRef({ ...repo, ref: "HEAD" }).catch(() => null),
 		// Wrap with Promise.resolve so a mock/stub returning undefined doesn't crash .then()
 		Promise.resolve(git.currentBranch({ ...repo, fullname: true }))
 			.then((cb) => cb ?? `refs/heads/${defaultBranch}`)
@@ -48,6 +47,20 @@ export async function listAllRefs(repo: Repo, defaultBranch = "main") {
 			}),
 		),
 	]);
+
+	// HEAD in a bare repo is almost always a symref to a branch whose oid
+	// branchRefs already resolved above with one direct GET each — reuse it
+	// instead of a second, separate resolveRef("HEAD") call. isomorphic-git's
+	// ref resolution runs its full multi-candidate expansion (refs/%s,
+	// refs/tags/%s, refs/heads/%s, refs/remotes/%s, refs/remotes/%s/HEAD)
+	// even when the symref target is already fully qualified, which used to
+	// cost several guaranteed-404 R2 reads on every clone/fetch. Falls back
+	// to the slow-but-correct path only when that lookup misses: detached
+	// HEAD (points at a raw sha, not a symref) or a symref to a branch that
+	// doesn't exist yet (freshly initialized, still-empty repo).
+	const headOid =
+		branchRefs.find((r) => r?.name === headSymref)?.oid ??
+		(await git.resolveRef({ ...repo, ref: "HEAD" }).catch(() => null));
 
 	const refs: Array<{ name: string; oid: string }> = [];
 	if (headOid) refs.push({ name: "HEAD", oid: headOid });
