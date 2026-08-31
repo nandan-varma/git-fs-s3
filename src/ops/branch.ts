@@ -23,6 +23,90 @@ export function assertSafeBranchName(name: string): void {
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 
+type RecursiveFileLister = {
+	listFilesRecursively(dirpath: string): Promise<string[]>;
+};
+
+function hasRecursiveFileLister(
+	fs: Repo["fs"],
+): fs is Repo["fs"] & RecursiveFileLister {
+	return (
+		typeof fs === "object" &&
+		fs !== null &&
+		"listFilesRecursively" in fs &&
+		typeof (fs as Partial<RecursiveFileLister>).listFilesRecursively ===
+			"function"
+	);
+}
+
+/**
+ * Lists loose branch names without isomorphic-git's recursive readdir/stat
+ * traversal. Object stores already return only leaf keys in a recursive LIST,
+ * so this is one request regardless of branch-name nesting. Ordinary
+ * filesystems retain isomorphic-git's implementation and packed refs remain
+ * supported there.
+ */
+async function listLooseBranches(repo: Repo): Promise<string[] | null> {
+	if (!hasRecursiveFileLister(repo.fs)) return null;
+	const names = await repo.fs.listFilesRecursively(`${repo.gitdir}/refs/heads`);
+	return names.filter(isSafeBranchName);
+}
+
+/** Read packed branch refs so the object-store fast path preserves Git semantics. */
+async function readPackedBranches(repo: Repo): Promise<Map<string, string>> {
+	if (!hasRecursiveFileLister(repo.fs)) return new Map();
+	const promisesFs = (
+		repo.fs as {
+			promises?: {
+				readFile(path: string, encoding: "utf8"): Promise<string | Uint8Array>;
+			};
+		}
+	).promises;
+	if (!promisesFs) return new Map();
+	try {
+		const content = await promisesFs.readFile(
+			`${repo.gitdir}/packed-refs`,
+			"utf8",
+		);
+		const refs = new Map<string, string>();
+		for (const line of (typeof content === "string"
+			? content
+			: new TextDecoder().decode(content)
+		).split("\n")) {
+			const match = /^([0-9a-f]{40}) refs\/heads\/(.+)$/i.exec(line);
+			if (match?.[1] && match[2] && isSafeBranchName(match[2])) {
+				refs.set(match[2], match[1]);
+			}
+		}
+		return refs;
+	} catch {
+		return new Map();
+	}
+}
+
+/** Read the symbolic HEAD directly when the object-store fs is available. */
+async function getCurrentLooseBranch(repo: Repo): Promise<string | null> {
+	if (!hasRecursiveFileLister(repo.fs)) return null;
+	const promisesFs = (
+		repo.fs as {
+			promises?: {
+				readFile(path: string, encoding: "utf8"): Promise<string | Uint8Array>;
+			};
+		}
+	).promises;
+	if (!promisesFs) return null;
+	try {
+		const content = await promisesFs.readFile(`${repo.gitdir}/HEAD`, "utf8");
+		const head = (
+			typeof content === "string" ? content : new TextDecoder().decode(content)
+		).trim();
+		const match = /^ref: refs\/heads\/(.+)$/.exec(head);
+		return match?.[1] && isSafeBranchName(match[1]) ? match[1] : null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Resolve a fully-qualified ref's oid with one read instead of isomorphic-
  * git's own `resolveRef`, which does a stat *then* a read for a loose ref
@@ -72,17 +156,35 @@ export async function resolveLooseRefFast(
 /** All branches with their tip commits; [] for an empty repository. */
 export async function listBranches(repo: Repo): Promise<Branch[]> {
 	try {
-		const [branches, currentBranch] = await Promise.all([
-			git.listBranches(repo),
-			git.currentBranch({ ...repo, fullname: false }).catch(() => null),
-		]);
+		const [looseBranches, looseCurrentBranch, packedBranches] =
+			await Promise.all([
+				listLooseBranches(repo),
+				getCurrentLooseBranch(repo),
+				readPackedBranches(repo),
+			]);
+		const branches =
+			looseBranches === null
+				? await git.listBranches(repo)
+				: [...new Set([...looseBranches, ...packedBranches.keys()])].sort();
+		const currentBranch =
+			looseBranches === null
+				? await git
+						.currentBranch({ ...repo, fullname: false })
+						.catch(() => null)
+				: looseCurrentBranch;
 
 		return Promise.all(
-			branches.map(async (branch) => ({
-				name: branch,
-				commit: await resolveLooseRefFast(repo, `refs/heads/${branch}`),
-				isDefault: branch === currentBranch,
-			})),
+			branches.map(async (branch) => {
+				const packedCommit = packedBranches.get(branch);
+				return {
+					name: branch,
+					commit:
+						packedCommit && !looseBranches?.includes(branch)
+							? packedCommit
+							: await resolveLooseRefFast(repo, `refs/heads/${branch}`),
+					isDefault: branch === currentBranch,
+				};
+			}),
 		);
 	} catch (err: unknown) {
 		if ((err as { code?: string }).code === "NotFoundError") return [];

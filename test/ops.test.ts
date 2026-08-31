@@ -284,6 +284,53 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect((await listBranches(repo)).map((b) => b.name)).toEqual(["main"]);
 	});
 
+	it("lists nested loose branches without statting every ref namespace entry", async () => {
+		const store = new MemoryObjectStore();
+		const fs = createGitFs(store);
+		const localRepo: Repo = {
+			fs,
+			gitdir: "repos/x/y/git",
+			cache: {},
+		};
+		await seed(localRepo);
+		await createBranchFrom(localRepo, "feature/ui", "main");
+
+		const listSpy = vi.spyOn(store, "list");
+		const headSpy = vi.spyOn(store, "head");
+		const branches = await listBranches(localRepo);
+
+		expect(branches.map((branch) => branch.name)).toEqual([
+			"feature/ui",
+			"main",
+		]);
+		expect(
+			listSpy.mock.calls.filter(
+				([prefix]) => prefix === "repos/x/y/git/refs/heads/",
+			),
+		).toEqual([["repos/x/y/git/refs/heads/"]]);
+		expect(headSpy).not.toHaveBeenCalled();
+	});
+
+	it("includes packed branches on the object-store fast path", async () => {
+		const store = new MemoryObjectStore();
+		const localRepo: Repo = {
+			fs: createGitFs(store),
+			gitdir: "repos/x/y/git",
+			cache: {},
+		};
+		await seed(localRepo);
+		const oid = await resolveLooseRefFast(localRepo, "refs/heads/main");
+		await store.put(
+			"repos/x/y/git/packed-refs",
+			new TextEncoder().encode(`${oid} refs/heads/release/1.0\n`),
+		);
+
+		await expect(listBranches(localRepo)).resolves.toEqual([
+			{ name: "main", commit: oid, isDefault: true },
+			{ name: "release/1.0", commit: oid, isDefault: false },
+		]);
+	});
+
 	it("resolveLooseRefFast reads a loose ref with one object-store call, not a stat-then-read", async () => {
 		const store = new MemoryObjectStore();
 		const localRepo: Repo = {

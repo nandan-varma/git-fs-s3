@@ -264,6 +264,22 @@ describe("git-aware optimizations", () => {
 		await expect(empty.prefetchPacks("nothing/here")).resolves.toBeUndefined();
 	});
 
+	it("lists nested files with one recursive storage listing", async () => {
+		const store = new MemoryObjectStore();
+		const fs = createGitFs(store);
+		await store.put("repos/a/r/git/refs/heads/main", new Uint8Array());
+		await store.put("repos/a/r/git/refs/heads/feature/ui", new Uint8Array());
+		await store.put("repos/a/r/git/refs/tags/v1", new Uint8Array());
+
+		const listSpy = vi.spyOn(store, "list");
+		await expect(
+			fs.listFilesRecursively("repos/a/r/git/refs/heads"),
+		).resolves.toEqual(["feature/ui", "main"]);
+		expect(listSpy).toHaveBeenCalledExactlyOnceWith(
+			"repos/a/r/git/refs/heads/",
+		);
+	});
+
 	it("prefetchPacks bails out beyond maxPacks * 2 entries but still detects hints", async () => {
 		const { store, gitFs } = optimizedSetup();
 		for (let i = 0; i < 5; i++) {

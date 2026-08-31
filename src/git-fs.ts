@@ -56,6 +56,14 @@ function resolveEncoding(
  */
 export interface GitFs extends GitFsClient {
 	/**
+	 * Return every file below a directory in one object-store listing. Unlike
+	 * `readdir`, this deliberately does not use a delimiter: object storage can
+	 * enumerate a ref namespace recursively without the stat-per-entry walk a
+	 * POSIX filesystem needs to distinguish files from implicit directories.
+	 * Paths are relative to `dirpath` and never include directory entries.
+	 */
+	listFilesRecursively(dirpath: string): Promise<string[]>;
+	/**
 	 * Probe, with one bounded list, whether `gitdir` contains any loose
 	 * objects, and remember the answer. This is the only way a loose-object
 	 * hint is ever created; call it before full-history walks (commit logs,
@@ -268,6 +276,16 @@ export function createGitFs(
 		]);
 	}
 
+	async function listFilesRecursively(dirpath: string): Promise<string[]> {
+		const directory = toKey(normalizePath(dirpath));
+		const listPrefix = directory === "" ? "" : `${directory}/`;
+		const { objects } = await store.list(listPrefix);
+		return objects
+			.map((object) => object.key.slice(listPrefix.length))
+			.filter((path) => path.length > 0)
+			.sort();
+	}
+
 	function invalidate(pathPrefix: string): void {
 		const normalized = normalizePath(pathPrefix);
 		for (const scope of looseHints.keys()) {
@@ -279,5 +297,11 @@ export function createGitFs(
 		maybe.invalidate?.(toKey(normalized));
 	}
 
-	return { promises, detectLooseObjects, prefetchPacks, invalidate };
+	return {
+		promises,
+		listFilesRecursively,
+		detectLooseObjects,
+		prefetchPacks,
+		invalidate,
+	};
 }
