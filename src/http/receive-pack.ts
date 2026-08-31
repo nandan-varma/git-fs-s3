@@ -230,7 +230,18 @@ export async function applyReceivePack(
 		.filter((update) => update.newOid !== ZERO_OID)
 		.map((update) => update.newOid);
 	if (newTips.length > 0) {
-		const { complete } = await collectReachableOids(repo, newTips, hooks);
+		// Each update's pre-image (oldOid) was already reachable and readable
+		// before this push — a fast-forward or new-branch push only needs its
+		// *new* objects validated, not the whole pre-existing history again.
+		const haveOids = acceptedUpdates
+			.map((update) => update.oldOid)
+			.filter((oid) => oid !== ZERO_OID);
+		const { complete } = await collectReachableOids(
+			repo,
+			newTips,
+			hooks,
+			haveOids,
+		);
 		if (!complete) {
 			await Promise.all(
 				incomingPackPaths.map((filepath) =>

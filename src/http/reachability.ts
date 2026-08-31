@@ -25,16 +25,27 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const MISSING_OBJECT_RETRY_DELAY_MS = 200;
 
 /**
- * Walk the full object graph from `startOids`, returning every reachable
- * oid. Concurrent traversal paths are deduplicated promise-per-oid; a
- * missing object is retried once, then reported through `hooks.onWarn` and
+ * Walk the object graph from `startOids`, returning every reachable oid.
+ * Concurrent traversal paths are deduplicated promise-per-oid; a missing
+ * object is retried once, then reported through `hooks.onWarn` and
  * reflected in `complete: false`.
+ *
+ * `haveOids` bounds the walk: any oid in this set is assumed already
+ * verified (it was reachable from a ref that existed before this call) and
+ * is recorded in `seen` without being read or descended into. Without a
+ * boundary, every call re-walks the *entire* history from scratch — for
+ * receive-pack validation (see receive-pack.ts) that means every push pays
+ * for reading every object in the repo, not just the ones it introduced,
+ * and one transient read failure anywhere in that whole history rejects an
+ * otherwise-valid push.
  */
 export async function collectReachableOids(
 	repo: Repo,
 	startOids: string[],
 	hooks?: HttpHooks,
+	haveOids?: ReadonlySet<string> | readonly string[],
 ): Promise<ReachabilityResult> {
+	const have = haveOids instanceof Set ? haveOids : new Set(haveOids ?? []);
 	const seen = new Set<string>();
 	let complete = true;
 	const promises = new Map<string, Promise<void>>();
@@ -61,6 +72,13 @@ export async function collectReachableOids(
 	function visit(oid: string): Promise<void> {
 		const existing = promises.get(oid);
 		if (existing) return existing;
+
+		if (have.has(oid)) {
+			seen.add(oid);
+			const p = Promise.resolve();
+			promises.set(oid, p);
+			return p;
+		}
 
 		const p = (async () => {
 			try {
