@@ -208,6 +208,15 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(prefetch).not.toHaveBeenCalled();
 	});
 
+	it("prefetches packs before resolving a file at a ref", async () => {
+		const prefetch = vi.fn().mockResolvedValue(undefined);
+
+		await expect(
+			getFileFromRef(repo, "README.md", "main", { prefetch }),
+		).resolves.toMatchObject({ content: "# hello\n", isBinary: false });
+		expect(prefetch).toHaveBeenCalledExactlyOnceWith();
+	});
+
 	it("resolves last commits per tree entry", async () => {
 		const last = await getLastCommitsForTree(repo, {
 			ref: "main",

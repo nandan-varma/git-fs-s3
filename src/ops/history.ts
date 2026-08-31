@@ -85,7 +85,17 @@ export async function getFileContent(
 	repo: Repo,
 	filePath: string,
 	ref = "main",
+	hooks?: OpsHooks,
 ): Promise<Uint8Array> {
+	// A blob page needs a commit, one or more tree objects, and the blob. On a
+	// multi-pack object store, letting isomorphic-git discover those packs one
+	// at a time turns that otherwise short read into a serial network walk.
+	// Warm every pack before resolving the ref so every later object lookup can
+	// use the local parse cache. This is the same structural optimization used
+	// for tree and history reads, now applied to file reads as well.
+	if (hooks?.prefetch) {
+		await runStep(hooks, "prefetch", hooks.prefetch);
+	}
 	const { commit } = await resolveCommit(repo, ref);
 	const context = `${repo.gitdir}@${ref}:${filePath}`;
 	const entry = await wrapMissingObject(
@@ -202,8 +212,9 @@ export async function getFileFromRef(
 	repo: Repo,
 	filePath: string,
 	ref: string,
+	hooks?: OpsHooks,
 ): Promise<{ content: string; size: number; isBinary: boolean }> {
-	const bytes = await getFileContent(repo, filePath, ref);
+	const bytes = await getFileContent(repo, filePath, ref, hooks);
 	const isBinary = hasNullByte(bytes);
 
 	return {
