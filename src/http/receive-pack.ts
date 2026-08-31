@@ -125,6 +125,23 @@ async function checkRefCas(
 			};
 }
 
+/** Every branch/tag tip currently in the repo, as a validation boundary — see
+ * its call site in {@link applyReceivePack}. */
+async function collectExistingRefTips(repo: Repo): Promise<Set<string>> {
+	const [branches, tags] = await Promise.all([
+		git.listBranches(repo),
+		git.listTags(repo),
+	]);
+	const refs = [
+		...branches.map((b) => `refs/heads/${b}`),
+		...tags.map((t) => `refs/tags/${t}`),
+	];
+	const oids = await Promise.all(
+		refs.map((ref) => git.resolveRef({ ...repo, ref }).catch(() => null)),
+	);
+	return new Set(oids.filter((oid): oid is string => oid !== null));
+}
+
 async function validateRefUpdates(
 	repo: Repo,
 	refUpdates: RefUpdateCommand[],
@@ -230,12 +247,16 @@ export async function applyReceivePack(
 		.filter((update) => update.newOid !== ZERO_OID)
 		.map((update) => update.newOid);
 	if (newTips.length > 0) {
-		// Each update's pre-image (oldOid) was already reachable and readable
-		// before this push — a fast-forward or new-branch push only needs its
-		// *new* objects validated, not the whole pre-existing history again.
-		const haveOids = acceptedUpdates
-			.map((update) => update.oldOid)
-			.filter((oid) => oid !== ZERO_OID);
+		// Every oid reachable from an existing ref was already accepted by an
+		// earlier push — not just the ref(s) this push happens to touch. A
+		// brand-new branch (oldOid === ZERO_OID, so it has no pre-image of its
+		// own) is the common case this matters for: creating a branch off an
+		// existing one is still just one new commit's worth of new objects,
+		// and shouldn't cost a walk of the entire repo history to validate.
+		const haveOids = await collectExistingRefTips(repo);
+		for (const update of acceptedUpdates) {
+			if (update.oldOid !== ZERO_OID) haveOids.add(update.oldOid);
+		}
 		const { complete } = await collectReachableOids(
 			repo,
 			newTips,

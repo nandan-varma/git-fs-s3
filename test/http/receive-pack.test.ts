@@ -313,6 +313,63 @@ describe("applyReceivePack", () => {
 		readSpy.mockRestore();
 	});
 
+	it("bounds a brand-new branch's validation walk at other existing refs' tips", async () => {
+		// A new branch has no oldOid of its own (ZERO_OID) to bound its walk
+		// against — the common real-world shape of this is a PR branch cut
+		// from an already-pushed main. Without also using main's tip as a
+		// boundary, creating that branch would re-walk main's entire history
+		// on every single PR push.
+		const repo = makeRepo();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+
+		let mainTip: string | undefined;
+		for (let i = 0; i < 25; i++) {
+			mainTip = await commitFilesToBare(repo, {
+				branch: "main",
+				message: `commit ${i}\n`,
+				author,
+				files: [{ path: "file.txt", content: `v${i}\n` }],
+			});
+		}
+
+		const staging = makeRepo();
+		await git.init({
+			...staging,
+			dir: staging.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+		const { packfile, commitOid } = await buildPushPack(
+			staging,
+			mainTip,
+			"pr commit",
+		);
+
+		const readSpy = vi.spyOn(git, "readObject");
+		readSpy.mockClear();
+
+		const { results } = await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				concatBuffers(
+					pktLine(`${ZERO_OID} ${commitOid} refs/heads/pr-branch\n`),
+					new TextEncoder().encode("0000"),
+					packfile,
+				),
+			),
+			{ defaultBranch: "main" },
+		);
+
+		expect(results).toEqual([{ refName: "refs/heads/pr-branch", ok: true }]);
+		expect(readSpy.mock.calls.length).toBeLessThan(10);
+		readSpy.mockRestore();
+	});
+
 	it("still accepts a fast-forward push when pre-existing history has become unreadable", async () => {
 		// Regression test for a real incident: the object-graph validation
 		// walked the *entire* history reachable from the new tip on every
@@ -376,6 +433,73 @@ describe("applyReceivePack", () => {
 		expect(results).toEqual([{ refName: "refs/heads/main", ok: true }]);
 		const headOid = await git.resolveRef({ ...repo, ref: "refs/heads/main" });
 		expect(headOid).toBe(commitOid);
+	});
+
+	it("accepts a brand-new branch cut from an existing branch whose deeper history has become unreadable", async () => {
+		// Same real incident as the test above, but for the shape that
+		// actually broke in production: a *new* branch (a PR branch) cut from
+		// main, where main's tip itself resolves fine but an object further
+		// back in main's history is gone. A new branch has no oldOid of its
+		// own, so without also bounding at *other* existing refs' tips (see
+		// the "bounds a brand-new branch's..." test above), this walk would
+		// still fall through to the hole.
+		const { repo, store } = makeRepoWithStore();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "commit that will become unreadable\n",
+			author,
+			files: [{ path: "file.txt", content: "v0\n" }],
+		});
+		const { objects: objectsAfterFirstCommit } = await store.list("");
+		const firstCommitObjectKeys = objectsAfterFirstCommit
+			.map(({ key }) => key)
+			.filter((key) => key.includes("/objects/"));
+
+		const mainTip = await commitFilesToBare(repo, {
+			branch: "main",
+			message: "commit that stays readable\n",
+			author,
+			files: [{ path: "file.txt", content: "v1\n" }],
+		});
+
+		// Only the *older* commit's own objects go missing — mainTip and its
+		// tree/blob are untouched, so main's own ref still resolves and reads
+		// fine; only a full walk past it would notice the hole.
+		await Promise.all(firstCommitObjectKeys.map((key) => store.delete(key)));
+
+		const staging = makeRepo();
+		await git.init({
+			...staging,
+			dir: staging.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+		const { packfile, commitOid } = await buildPushPack(
+			staging,
+			mainTip,
+			"pr commit",
+		);
+
+		const { results } = await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				concatBuffers(
+					pktLine(`${ZERO_OID} ${commitOid} refs/heads/pr-branch\n`),
+					new TextEncoder().encode("0000"),
+					packfile,
+				),
+			),
+			{ defaultBranch: "main" },
+		);
+
+		expect(results).toEqual([{ refName: "refs/heads/pr-branch", ok: true }]);
 	});
 
 	it("builds a report-status response from receivePackResponse", () => {
