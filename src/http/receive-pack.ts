@@ -3,6 +3,7 @@ import { concat, decodeAscii, decodeUtf8 } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
 import { isSafeFullRefName } from "../refs.js";
 import { FLUSH, pktLine } from "./pkt-line.js";
+import { collectReachableOids } from "./reachability.js";
 import { type RepackOptions, repackRepository } from "./repack.js";
 import { type GitHttpResult, type HttpHooks, rawFs, runStep } from "./types.js";
 
@@ -67,22 +68,54 @@ export async function indexIncomingPack(
 	repo: Repo,
 	packData: Uint8Array,
 	hooks?: HttpHooks,
-): Promise<void> {
-	if (packData.length < 4) return;
-	await runStep(hooks, "write + indexPack incoming pack", async () => {
-		const fsp = rawFs(repo);
-		const packDir = `${repo.gitdir}/objects/pack`;
-		await fsp.mkdir(packDir, { recursive: true });
+): Promise<string[]> {
+	if (packData.length < 4) return [];
+	const packName = await runStep(
+		hooks,
+		"write + indexPack incoming pack",
+		async () => {
+			const fsp = rawFs(repo);
+			const packDir = `${repo.gitdir}/objects/pack`;
+			await fsp.mkdir(packDir, { recursive: true });
 
-		const packName = `recv-${Date.now()}`;
-		await fsp.writeFile(`${packDir}/${packName}.pack`, packData);
+			const packName = `recv-${Date.now()}`;
+			await fsp.writeFile(`${packDir}/${packName}.pack`, packData);
 
-		await git.indexPack({
-			...repo,
-			dir: packDir,
-			filepath: `${packName}.pack`,
-		});
-	});
+			await git.indexPack({
+				...repo,
+				dir: packDir,
+				filepath: `${packName}.pack`,
+			});
+			return packName;
+		},
+	);
+	return [
+		`${repo.gitdir}/objects/pack/${packName}.pack`,
+		`${repo.gitdir}/objects/pack/${packName}.idx`,
+	];
+}
+
+async function validateRefUpdates(
+	repo: Repo,
+	refUpdates: RefUpdateCommand[],
+): Promise<RefUpdateResult[]> {
+	return Promise.all(
+		refUpdates.map(async ({ oldOid, refName }) => {
+			if (!isSafeFullRefName(refName)) {
+				return { refName, ok: false, reason: "invalid ref name" };
+			}
+			const currentOid = await git
+				.resolveRef({ ...repo, ref: refName })
+				.catch(() => ZERO_OID);
+			return currentOid === oldOid
+				? { refName, ok: true }
+				: {
+						refName,
+						ok: false,
+						reason: "non-fast-forward, ref updated by another push",
+					};
+		}),
+	);
 }
 
 /**
@@ -175,11 +208,53 @@ export async function applyReceivePack(
 	hooks?: HttpHooks,
 ): Promise<{ results: RefUpdateResult[]; stalePackPaths: string[] }> {
 	await ensureRepoInitialized(repo, options?.defaultBranch ?? "main");
-	await indexIncomingPack(repo, parsed.packData, hooks);
-	const results = await applyRefUpdates(repo, parsed.refUpdates, hooks);
+	const preflight = await validateRefUpdates(repo, parsed.refUpdates);
+	const acceptedUpdates = parsed.refUpdates.filter(
+		(_, index) => preflight[index]?.ok,
+	);
+	const incomingPackPaths = await indexIncomingPack(
+		repo,
+		acceptedUpdates.some((update) => update.newOid !== ZERO_OID)
+			? parsed.packData
+			: new Uint8Array(),
+		hooks,
+	);
+
+	const newTips = acceptedUpdates
+		.filter((update) => update.newOid !== ZERO_OID)
+		.map((update) => update.newOid);
+	if (newTips.length > 0) {
+		const { complete } = await collectReachableOids(repo, newTips, hooks);
+		if (!complete) {
+			await Promise.all(
+				incomingPackPaths.map((filepath) =>
+					rawFs(repo)
+						.unlink(filepath)
+						.catch(() => {}),
+				),
+			);
+			return {
+				results: preflight.map((result) =>
+					result.ok
+						? { ...result, ok: false, reason: "incomplete object graph" }
+						: result,
+				),
+				stalePackPaths: [],
+			};
+		}
+	}
+
+	const applied = await applyRefUpdates(repo, acceptedUpdates, hooks);
+	const results = preflight.map((result, index) =>
+		result.ok
+			? (applied.find(
+					(entry) => entry.refName === parsed.refUpdates[index]?.refName,
+				) ?? result)
+			: result,
+	);
 	const repackOptions = options?.repack;
 	const stalePackPaths =
-		repackOptions === false
+		repackOptions === false || !results.some((result) => result.ok)
 			? []
 			: await runStep(hooks, "repack", () =>
 					repackRepository(repo, repackOptions, hooks),
