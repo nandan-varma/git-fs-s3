@@ -21,6 +21,54 @@ export function assertSafeBranchName(name: string): void {
 	}
 }
 
+const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
+
+/**
+ * Resolve a fully-qualified ref's oid with one read instead of isomorphic-
+ * git's own `resolveRef`, which does a stat *then* a read for a loose ref
+ * (two round trips against object storage) — wasteful specifically here,
+ * where the caller already knows the ref exists (it came from a directory
+ * listing moments earlier). Reads the loose file directly and falls back to
+ * `git.resolveRef` only when that doesn't pan out (packed-refs, or anything
+ * else the plain-loose-file assumption doesn't cover), so correctness for
+ * those cases is unchanged — this only removes the redundant round trip on
+ * the common path.
+ */
+export async function resolveLooseRefFast(
+	repo: Repo,
+	ref: string,
+): Promise<string> {
+	// Repo.fs is typed as isomorphic-git's own fs union (promise- or
+	// callback-based) since that's what git.readTree's signature allows, but
+	// every fs this package actually constructs (git-fs.ts) is promise-based
+	// — the runtime check just keeps the callback-style branch honest instead
+	// of crashing on it.
+	const promisesFs = (
+		repo.fs as {
+			promises?: {
+				readFile(path: string, encoding: "utf8"): Promise<string | Uint8Array>;
+			};
+		}
+	).promises;
+	if (promisesFs) {
+		try {
+			const content = await promisesFs.readFile(
+				`${repo.gitdir}/${ref}`,
+				"utf8",
+			);
+			const oid = (
+				typeof content === "string"
+					? content
+					: new TextDecoder().decode(content)
+			).trim();
+			if (FULL_SHA_RE.test(oid)) return oid;
+		} catch {
+			// Not a loose file (packed-refs, or genuinely absent) — fall through.
+		}
+	}
+	return git.resolveRef({ ...repo, ref });
+}
+
 /** All branches with their tip commits; [] for an empty repository. */
 export async function listBranches(repo: Repo): Promise<Branch[]> {
 	try {
@@ -32,7 +80,7 @@ export async function listBranches(repo: Repo): Promise<Branch[]> {
 		return Promise.all(
 			branches.map(async (branch) => ({
 				name: branch,
-				commit: await git.resolveRef({ ...repo, ref: `refs/heads/${branch}` }),
+				commit: await resolveLooseRefFast(repo, `refs/heads/${branch}`),
 				isDefault: branch === currentBranch,
 			})),
 		);
@@ -50,10 +98,7 @@ export async function createBranchFrom(
 ): Promise<void> {
 	assertSafeBranchName(name);
 	assertSafeBranchName(startPoint);
-	const object = await git.resolveRef({
-		...repo,
-		ref: `refs/heads/${startPoint}`,
-	});
+	const object = await resolveLooseRefFast(repo, `refs/heads/${startPoint}`);
 	await git.branch({ ...repo, ref: name, checkout: false, object });
 }
 
@@ -72,5 +117,5 @@ export async function assertBranchExists(
 	name: string,
 ): Promise<void> {
 	assertSafeBranchName(name);
-	await git.resolveRef({ ...repo, ref: `refs/heads/${name}` });
+	await resolveLooseRefFast(repo, `refs/heads/${name}`);
 }

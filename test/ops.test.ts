@@ -27,6 +27,7 @@ import {
 	listBranches,
 	type Repo,
 	type ResultCache,
+	resolveLooseRefFast,
 	resultKeyPrefixes,
 	writeCommitToBare,
 } from "../src/ops/index.js";
@@ -281,6 +282,50 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 
 		await deleteBranchByName(repo, "feature");
 		expect((await listBranches(repo)).map((b) => b.name)).toEqual(["main"]);
+	});
+
+	it("resolveLooseRefFast reads a loose ref with one object-store call, not a stat-then-read", async () => {
+		const store = new MemoryObjectStore();
+		const localRepo: Repo = {
+			fs: createGitFs(store),
+			gitdir: "repos/x/y/git",
+			cache: {},
+		};
+		await seed(localRepo);
+
+		const headSpy = vi.spyOn(store, "head");
+		const getSpy = vi.spyOn(store, "get");
+
+		const oid = await resolveLooseRefFast(localRepo, "refs/heads/main");
+
+		expect(oid).toMatch(/^[0-9a-f]{40}$/);
+		// isomorphic-git's own resolveRef does a stat then a read for a loose
+		// ref — resolveLooseRefFast is the point of this function: skip
+		// straight to the read.
+		expect(headSpy).not.toHaveBeenCalled();
+		expect(getSpy).toHaveBeenCalledTimes(1);
+		expect(getSpy).toHaveBeenCalledWith("repos/x/y/git/refs/heads/main");
+	});
+
+	it("resolveLooseRefFast falls back to git.resolveRef for a ref packed-refs would hold", async () => {
+		const store = new MemoryObjectStore();
+		const localRepo: Repo = {
+			fs: createGitFs(store),
+			gitdir: "repos/x/y/git",
+			cache: {},
+		};
+		await seed(localRepo);
+		// Simulate a packed (not loose) ref: no repos/x/y/git/refs/heads/packed
+		// object exists, only a packed-refs file listing it.
+		const mainOid = await resolveLooseRefFast(localRepo, "refs/heads/main");
+		await store.put(
+			"repos/x/y/git/packed-refs",
+			new TextEncoder().encode(`${mainOid} refs/heads/packed\n`),
+		);
+
+		const oid = await resolveLooseRefFast(localRepo, "refs/heads/packed");
+
+		expect(oid).toBe(mainOid);
 	});
 
 	it("deletes files via a bare commit", async () => {

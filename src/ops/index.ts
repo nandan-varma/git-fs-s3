@@ -5,6 +5,7 @@ export {
 	createBranchFrom,
 	deleteBranchByName,
 	listBranches,
+	resolveLooseRefFast,
 } from "./branch.js";
 export {
 	authorNow,

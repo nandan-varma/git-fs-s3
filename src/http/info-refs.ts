@@ -1,5 +1,6 @@
 import git from "isomorphic-git";
 import { concat } from "../edge-utils.js";
+import { resolveLooseRefFast } from "../ops/branch.js";
 import type { Repo } from "../ops/types.js";
 import { FLUSH, pktLine } from "./pkt-line.js";
 import { type GitHttpResult, type HttpHooks, runStep } from "./types.js";
@@ -23,10 +24,7 @@ export async function listAllRefs(repo: Repo, defaultBranch = "main") {
 		Promise.all(
 			branches.map(async (branch) => {
 				try {
-					const oid = await git.resolveRef({
-						...repo,
-						ref: `refs/heads/${branch}`,
-					});
+					const oid = await resolveLooseRefFast(repo, `refs/heads/${branch}`);
 					return { name: `refs/heads/${branch}`, oid };
 				} catch {
 					return null;
@@ -36,10 +34,7 @@ export async function listAllRefs(repo: Repo, defaultBranch = "main") {
 		Promise.all(
 			tags.map(async (tag) => {
 				try {
-					const oid = await git.resolveRef({
-						...repo,
-						ref: `refs/tags/${tag}`,
-					});
+					const oid = await resolveLooseRefFast(repo, `refs/tags/${tag}`);
 					return { name: `refs/tags/${tag}`, oid };
 				} catch {
 					return null;
