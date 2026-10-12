@@ -17,7 +17,7 @@ import { /* ... */ } from 'git-fs-s3';
 	signature="createGitFs(store: ObjectStore, options?: GitFsOptions): GitFs"
 	params={[
 		{ name: 'store', type: 'ObjectStore', description: 'Any store — see the ObjectStore guide.' },
-		{ name: 'options', type: 'GitFsOptions', description: '<code>prefix</code>, <code>looseObjectHints</code>, <code>isStructurallyAbsent</code>, <code>hintTtlMs</code>, <code>onNote</code>.', optional: true },
+		{ name: 'options', type: 'GitFsOptions', description: '<code>prefix</code>, <code>looseObjectHints</code>, <code>hintTtlMs</code>, <code>onNote</code>.', optional: true },
 	]}
 	returns="GitFs"
 >
@@ -31,9 +31,23 @@ import { /* ... */ } from 'git-fs-s3';
 
 | Method | Signature | What it does |
 | --- | --- | --- |
-| `detectLooseObjects` | `(gitdir: string) => Promise<void>` | One bounded LIST that registers the loose-object hint for a gitdir. |
-| `prefetchPacks` | `(gitdir: string, opts?: { maxPacks? }) => Promise<void>` | Warms all pack files in parallel before a sequential walk. |
-| `invalidate` | `(pathPrefix: string) => void` | Drops hints under the prefix and forwards to the store's own `invalidate` if it has one. |
+| `registerGitdir` | `(gitdir: string, facts?: GitdirFacts) => void` | Declares an existing gitdir: `stat` answers "directory" and `facts.absentFiles` (e.g. `packed-refs`, `shallow`) answer ENOENT, all with zero store calls. |
+| `detectLooseObjects` | `(gitdir: string) => Promise<void>` | One bounded LIST that registers the loose-object hint for a gitdir (otherwise done on the first loose-object read). |
+| `prefetchPacks` | `(gitdir: string, opts?: { maxPacks? }) => Promise<void>` | Warms every `.pack`/`.idx` in parallel before a sequential walk. |
+| `invalidate` | `(pathPrefix: string) => void` | Drops hints and registered gitdirs under the prefix and forwards to the store's own `invalidate` if it has one. |
+
+## Git layout
+
+Typed views of gitdir paths, instead of matching path strings.
+
+| Export | What it does |
+| --- | --- |
+| `classifyGitdirPath(path)` | Gitdir-relative path → `GitdirEntry` (`head`, `config`, `refs`, `objects-dir`, `pack-dir`, `pack-file`, `loose-object`, `other`). Listing prefixes end in `/`. |
+| `isMutableGitdirEntry(entry)` | True for entries that change between pushes: `HEAD`, refs, and the object/pack listings. |
+| `parseLooseObjectPath(path)` | `<gitdir>/objects/xx/<38 hex>` → `{ gitdir, oid }`, else `null`. |
+| `parsePackFileName(name)` / `parsePackDirectory(entries)` | Pack directory entries → `PackFileName` (`base`, `kind`, `name`); non-pack names are dropped. |
+| `packFileName(base, kind)` | Sibling file name of a pack, e.g. `packFileName(base, "idx")`. |
+| `PACK_FILE_KINDS` / `READABLE_PACK_FILE_KINDS` | All kinds git writes (`pack`, `idx`, `keep`, `bitmap`, `rev`) / the ones isomorphic-git reads. |
 
 ## Stores
 

@@ -177,11 +177,8 @@ describe("isomorphic-git through the full optimized stack", () => {
 			cacheMisses: true,
 			cacheLists: true,
 		});
-		fs = createGitFs(cached, {
-			looseObjectHints: true,
-			isStructurallyAbsent: (p) =>
-				p === `${gitdir}/packed-refs` || p === `${gitdir}/shallow`,
-		});
+		fs = createGitFs(cached, { looseObjectHints: true });
+		fs.registerGitdir(gitdir, { absentFiles: ["packed-refs", "shallow"] });
 		await git.init({ fs, gitdir, bare: true, defaultBranch: "main" });
 	});
 

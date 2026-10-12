@@ -1,6 +1,6 @@
 ---
 title: Repacking
-description: repackRepository's consolidation logic and its independent SHA-1 verification design.
+description: How repackRepository consolidates packs by reusing stored entries, and how it verifies the result.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -24,8 +24,8 @@ something consolidates them. `repackRepository` does that consolidation.
 	]}
 	returns="Promise<string[]>"
 >
-	The gitdir-relative paths of the `.pack`/`.idx` files it removed
-	*locally*. After syncing the new consolidated pack to any secondary
+	The gitdir-relative paths of the pack files it removed *locally* — every
+	`.pack`, `.idx`, `.keep`, `.bitmap` and `.rev` except the new pack's. After syncing the new consolidated pack to any secondary
 	storage, delete those same paths there too — see the note in
 	[Serving clones and pushes](/git-fs-s3/http/serving-clones-and-pushes/).
 </ApiSignature>
@@ -46,30 +46,34 @@ search (isomorphic-git checks each pack's index) is already cheap enough
 that consolidating isn't worth the extra push latency — skip it and let the
 next call re-check once enough small pushes have piled up packs.
 
-## Why every object is independently re-verified
+## How the consolidated pack is built
 
-isomorphic-git's *packed*-object read path — `readObjectPacked`, which
-resolves offset/ref deltas, possibly across pack files — never verifies the
-resolved content's SHA-1 against the requested oid. Only the loose-object
-read path does that check. A full reachability walk (exactly what repacking
-requires) is the operation most likely to touch objects nothing else ever
-reads, so a latent cross-pack delta-resolution bug would surface here
-first — silently, corrupting the consolidated pack — unless it's checked
-independently.
+When every reachable object is already in a pack (the normal case — pushes
+arrive as packs), `repackRepository` builds the new pack by **copying stored
+entries** out of the existing packs, the same pack reuse upload-pack uses
+(see [Serving clones and pushes](/git-fs-s3/http/serving-clones-and-pushes/)).
+Nothing is inflated or re-deflated, deltas are kept, and the consolidated
+pack is no larger than the packs it replaces. Only when some objects are
+loose does it fall back to reading each object, recomputing its SHA-1 from
+the bytes returned, and writing a pack of full, non-deltified entries.
 
-`repackRepository` reads every reachable object, independently recomputes
-its SHA-1 from the bytes it got back, and refuses to trust a mismatch. The
-resulting pack is written with **only full, non-deltified objects** — which
-also means the write path never touches the suspect delta-resolution code
-at all, since there are no deltas in it to resolve.
+Submodule gitlinks (tree entries with mode `160000`) point at commits in
+another repository; the walk doesn't follow them, so a repository with
+submodules in its history consolidates normally.
+
+## How the result is verified
+
+isomorphic-git's *packed*-object read path never checks a resolved object's
+SHA-1 against the requested oid, so the new pack is not trusted on the
+strength of how it was built. `git.indexPack` resolves every entry —
+deltas included — and derives each oid by hashing the result. Every
+reachable oid must appear in that index; extra delta bases carried over by
+reuse are fine.
 
 <Aside type="note">
-	This is also why the consolidated pack is verified once more after
-	writing: the newly built index's oid set is cross-checked against the
-	verified reachable set before any old pack is deleted. If they don't
-	match exactly, the new pack and index are deleted and the repack aborts
-	— old packs are never removed on anything less than full certainty the
-	replacement is complete.
+	If any reachable oid is missing from the new index, the new pack and
+	index are deleted and the repack aborts — old packs are never removed on
+	anything less than full certainty the replacement is complete.
 </Aside>
 
 ## Repack failure is non-fatal

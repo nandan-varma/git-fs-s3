@@ -131,7 +131,9 @@ describe("repackRepository", () => {
 
 		const body = bytes.subarray(0, bytes.length - 20);
 		const trailer = bytes.subarray(bytes.length - 20);
-		const expected = new Uint8Array(await crypto.subtle.digest("SHA-1", body));
+		const expected = new Uint8Array(
+			await crypto.subtle.digest("SHA-1", new Uint8Array(body)),
+		);
 		expect(Array.from(trailer)).toEqual(Array.from(expected));
 	});
 

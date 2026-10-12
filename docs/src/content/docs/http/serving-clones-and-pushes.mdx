@@ -115,10 +115,38 @@ await handleUploadPack(
 	you don't need to special-case that.
 </Aside>
 
+## How the clone/fetch pack is built
+
+After the walk, upload-pack builds the response pack by **reusing stored
+entries**: each wanted object's compressed bytes are copied straight out of
+the pack that holds it, deltas included. `OFS_DELTA` entries are rewritten as
+`REF_DELTA` (base named by oid, since offsets don't survive the move), and
+every delta base is written before the deltas that use it. Nothing is
+inflated or re-deflated, so the response is as compact as the stored packs.
+If any wanted object isn't packed (loose objects), it falls back to
+isomorphic-git's `packObjects`, which deflates every object without deltas.
+
+Measured on a real 3,368-object repository: building the pack went from
+~1.1 s to ~8 ms, and the clone download from 10 MB to 2.6 MB.
+
+For a fetch with `have` lines, the haves are walked first and the wants walk
+stops at anything the client already has, so shared history is walked once.
+Blobs aren't read during the upload-pack walk (their tree entries already
+say what they are); receive-pack and repack still read them, because there
+the walk *is* the existence check.
+
+## Share one isomorphic-git `cache` per repository
+
+Pass the same `cache` object on every `repo` for a given repository, across
+requests. isomorphic-git keeps parsed pack indexes (and its one-time
+checksum of each pack) in it; without one, *every object read* re-parses
+every `.idx` and re-hashes every `.pack`. On the repository above that was
+the difference between a 2.2 s and a 0.1 s clone walk.
+
 ## Routing
 
 None of these handlers care how you route to them — they only need `repo`
-(a `{ fs, gitdir, cache? }`, however you resolve it per-request) and the
+(a `{ fs, gitdir, cache }`, however you resolve it per-request) and the
 raw `Request`. A typical catch-all route parses the URL
 (`.../<owner>/<repo>.git/info/refs`, `.../git-upload-pack`,
 `.../git-receive-pack`), resolves `repo` for that owner/repo pair, checks

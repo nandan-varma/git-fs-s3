@@ -35,6 +35,7 @@ refs and other mutable paths need a much shorter TTL instead, via
 | `cacheMisses` | `false` | Also cache "not found" results. |
 | `cacheLists` | `false` | Also cache `list()` results (directory listings, existence probes). |
 | `coalesce` | `true` | Collapse concurrent identical requests into one backend call. |
+| `copy` | `true` | Return a fresh copy per hit so callers can't mutate cached bytes. Set `false` when readers never mutate (isomorphic-git doesn't) — otherwise every hit copies the whole entry, megabytes for a packfile. |
 | `onHit` / `onMiss` | — | Instrumentation hooks, called with the key. |
 
 ## `ttlForKey`
@@ -68,6 +69,10 @@ whole point of content addressing is that a hit is correct forever — but it's
 	than simply not-yet-listed.
 </Aside>
 
+`classifyGitdirPath` turns a gitdir-relative path into a typed entry (`head`,
+`refs`, `pack-dir`, `pack-file`, `loose-object`, …) and
+`isMutableGitdirEntry` is true exactly for the mutable ones above.
+
 A ref is one small object and a pack listing is one bounded `list()` call,
 so re-checking either far more often than `ttlMs` costs little. Everything
 *downstream* of a fresh ref or listing — the tree, commit, and blob reads
@@ -76,10 +81,17 @@ named — still gets the full `ttlMs` cache benefit once the structure itself
 is current:
 
 ```typescript
+import { classifyGitdirPath, isMutableGitdirEntry } from 'git-fs-s3';
+
+// Keys here are `repos/<owner>/<repo>/git/<path inside the gitdir>`.
+const pathInGitdir = (key: string) => key.split('/').slice(4).join('/');
+
 const cached = createCachedStore(store, {
   ttlMs: 3_600_000, // 1h — safe for object reads
   ttlForKey: (key) =>
-    /\/(HEAD|refs(\/|$)|objects\/(pack\/)?$)/.test(key) ? 5_000 : undefined,
+    isMutableGitdirEntry(classifyGitdirPath(pathInGitdir(key)))
+      ? 5_000
+      : undefined,
 });
 ```
 

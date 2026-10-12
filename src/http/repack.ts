@@ -61,7 +61,10 @@ async function hashGitObject(
 	return sha1(concat(prefix, content));
 }
 
-type VerifiedObject = { type: PackObjectType; content: Uint8Array };
+type VerifiedObject = {
+	type: PackObjectType;
+	content: Uint8Array<ArrayBuffer>;
+};
 
 /**
  * Read every reachable object and independently re-derive its oid from the
@@ -85,7 +88,9 @@ async function readAndVerifyObjects(
 					oid,
 					format: "content",
 				});
-				const content = object as unknown as Uint8Array;
+				// Own ArrayBuffer-backed copy: Web APIs (Blob, digest) reject
+				// views that might sit on a SharedArrayBuffer.
+				const content = new Uint8Array(object as Uint8Array);
 				const actualOid = await hashGitObject(type, content);
 				if (actualOid !== oid) {
 					throw new Error(

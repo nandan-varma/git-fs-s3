@@ -25,8 +25,6 @@ const store = createCachedStore(
     new S3ObjectStore({
       client,
       bucket: 'my-git-repos',
-      contentType: (key) =>
-        /\/(HEAD|config)$|\/refs\//.test(key) ? 'text/plain' : undefined,
     })
   ),
   {
@@ -34,12 +32,15 @@ const store = createCachedStore(
     ttlMs: 3_600_000,
     cacheMisses: true,
     cacheLists: true,
+    copy: false, // isomorphic-git never mutates what it reads
   }
 );
 
-const fs = createGitFs(store, {
-  looseObjectHints: true,
-  isStructurallyAbsent: (p) => /(^|\/)git\/(packed-refs|shallow)$/.test(p),
+const fs = createGitFs(store, { looseObjectHints: true });
+
+// Once per repository, after confirming it exists (e.g. its database row):
+fs.registerGitdir('repos/alice/blog/git', {
+  absentFiles: ['packed-refs', 'shallow'],
 });
 ```
 
@@ -62,7 +63,7 @@ const fs = createGitFs(store, {
    failure — only a real result or a real (rare, already-retried) error.
 
 4. **`createGitFs` wraps the cache.** The git-aware layer (loose-object
-   hints, structural-absence short-circuits) sits on top so its own
+   hints, registered gitdirs) sits on top so its own
    bookkeeping benefits from everything below it being fast and resilient.
 
 </Steps>
@@ -75,8 +76,9 @@ guaranteed miss — pure wasted round trips. `looseObjectHints: true` tracks,
 per gitdir, whether *any* loose object has ever been seen, so a packed repo
 skips the probe entirely.
 
-Hints don't self-populate — call `detectLooseObjects(gitdir)` once per
-gitdir before a full-history walk:
+The first loose-object read under a gitdir detects its hint with one bounded
+`LIST` (concurrent reads share it). Call `detectLooseObjects(gitdir)` to do it
+up front instead, e.g. alongside other warm-up work:
 
 ```typescript
 await fs.detectLooseObjects(gitdir); // one bounded LIST per repo
@@ -85,22 +87,28 @@ await fs.detectLooseObjects(gitdir); // one bounded LIST per repo
 A loose *write* flips the hint back on instantly, so it's impossible for a
 hint to go stale mid-push and hide a just-written object.
 
-## `isStructurallyAbsent`
+## Registering gitdirs
 
-Some paths git probes constantly but a given backend simply never writes —
-`packed-refs` and `shallow`, for a backend that never packs refs or does
-shallow clones. `isStructurallyAbsent` answers `ENOENT` for them with **zero**
-store calls, not even a cached miss.
+isomorphic-git stats the gitdir on every command, and probes `packed-refs`
+and `shallow` on most of them. In object storage the gitdir stat is a `HEAD`
+that always misses plus a `LIST`, and the probes are guaranteed misses for a
+backend that never packs refs or serves shallow clones.
+`registerGitdir(gitdir, { absentFiles })` declares both facts, so those calls
+cost **zero** store requests:
 
-<Aside type="caution">
-	Match precisely. A plain suffix check is wrong — `refs/heads/packed-refs`
-	is a legal branch name, and a sloppy pattern would 404 it.
-</Aside>
+```typescript
+fs.registerGitdir(gitdir, { absentFiles: ['packed-refs', 'shallow'] });
+```
+
+`absentFiles` names top-level files of that gitdir only, so a branch called
+`refs/heads/packed-refs` is unaffected. `invalidate(prefix)` forgets
+registrations under the prefix (e.g. when a repository is deleted).
 
 ## Pack prefetching
 
 Before a full-history walk (a commit log, a reachability traversal), warm
-every pack file in parallel instead of paying one round trip per pack as the
+every `.pack`/`.idx` file in parallel (`.bitmap`/`.rev` are skipped —
+isomorphic-git never reads them) instead of paying one round trip per pack as the
 walk discovers each one sequentially:
 
 ```typescript

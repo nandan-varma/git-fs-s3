@@ -109,7 +109,6 @@ export function createGitFs(
 	options: GitFsOptions = {},
 ): GitFs {
 	const prefix = options.prefix ?? "";
-	const structurallyAbsent = options.isStructurallyAbsent;
 	const useLooseHints = options.looseObjectHints ?? false;
 	const onNote = options.onNote;
 
@@ -153,7 +152,7 @@ export function createGitFs(
 	 * listing per gitdir, cached for `hintTtlMs`.
 	 */
 	async function knownAbsent(path: string): Promise<boolean> {
-		if (structurallyAbsent?.(path) || registeredAbsent(path)) return true;
+		if (registeredAbsent(path)) return true;
 		if (!useLooseHints) return false;
 		const scope = looseScope(path);
 		if (scope === null) return false;

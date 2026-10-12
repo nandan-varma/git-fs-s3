@@ -31,7 +31,7 @@ Use it to build git-backed CMSes, notes apps with real version history, lightwei
 ## Install
 
 ```bash
-npm install git-fs-s3 isomorphic-git
+npm install git-fs-s3 isomorphic-git   # ESM only, Node.js 22+
 # for the S3 store (any S3-compatible provider):
 npm install @aws-sdk/client-s3
 ```
@@ -88,9 +88,11 @@ The stores compose as decorators. For a serving path that hits object storage hu
 
 ```typescript
 import {
+  classifyGitdirPath,
   createCachedStore,
   createGitFs,
   createRetryStore,
+  isMutableGitdirEntry,
 } from "git-fs-s3";
 import { S3ObjectStore } from "git-fs-s3/s3";
 
@@ -99,9 +101,6 @@ const store = createCachedStore(
     new S3ObjectStore({
       client,
       bucket: "my-git-repos",
-      // cosmetic: keeps refs/config human-readable in bucket UIs
-      contentType: (key) =>
-        /\/(HEAD|config)$|\/refs\//.test(key) ? "text/plain" : undefined,
     }),
   ),
   {
@@ -114,20 +113,23 @@ const store = createCachedStore(
     // process can keep serving a pre-push ref (or fail to notice a freshly
     // pushed pack exists at all) for the rest of ttlMs. Cheap: both are one
     // small object or a bounded listing.
+    // Keys here are `repos/<owner>/<repo>/git/<path inside the gitdir>`.
     ttlForKey: (key) =>
-      /\/(HEAD|refs(\/|$)|objects\/(pack\/)?$)/.test(key) ? 5_000 : undefined,
+      isMutableGitdirEntry(classifyGitdirPath(key.split("/").slice(4).join("/")))
+        ? 5_000
+        : undefined,
+    copy: false, // isomorphic-git never mutates what it reads
   },
 );
 
-const fs = createGitFs(store, {
-  looseObjectHints: true,
-  // paths git probes constantly but this backend never writes:
-  isStructurallyAbsent: (p) => /(^|\/)git\/(packed-refs|shallow)$/.test(p),
-});
+const fs = createGitFs(store, { looseObjectHints: true });
+
+// Once the repository is known to exist: its gitdir stat and the
+// packed-refs/shallow probes git makes constantly cost zero store calls.
+fs.registerGitdir(gitdir, { absentFiles: ["packed-refs", "shallow"] });
 
 // Before a full-history walk (commit log, reachability traversal):
-await fs.detectLooseObjects(gitdir);   // one bounded LIST per repo
-await fs.prefetchPacks(gitdir);        // parallel pack warm-up
+await fs.prefetchPacks(gitdir);        // parallel .pack/.idx warm-up
 
 // After anything writes to the bucket *around* this fs (a hydrate/sync
 // pipeline, a bulk upload, another process): drop the affected state, or
@@ -142,15 +144,19 @@ fs.invalidate("repos/alice/blog");
 Returns a promise-based fs client for isomorphic-git's `fs` option, plus git-aware maintenance methods.
 
 - `options.prefix` — key prefix all paths resolve under (e.g. `"repos/alice/blog"`). Paths that would traverse above it throw `EINVAL`.
-- `options.looseObjectHints` — remember, per gitdir, whether any loose objects exist so fully packed repos skip every guaranteed-miss loose read. Hints are only created by `detectLooseObjects`; a loose write flips them back instantly, so they can't go stale mid-push. Default off.
-- `options.isStructurallyAbsent(path)` — paths that are known never to exist answer `ENOENT` with zero store calls (e.g. `packed-refs`/`shallow` under your gitdir layout). Match precisely — `refs/heads/packed-refs` is a legal branch.
+- `options.looseObjectHints` — remember, per gitdir, whether any loose objects exist so fully packed repos skip every guaranteed-miss loose read. The first loose-object read under a gitdir detects it (one coalesced LIST); a loose write flips it back instantly, so it can't go stale mid-push. Default off.
 - `options.hintTtlMs` — loose-hint TTL, default 1 h. `options.onNote` — diagnostic sink.
 
 The returned fs also exposes:
 
-- `detectLooseObjects(gitdir)` — one bounded LIST that registers the loose-object hint; call before full-history walks.
-- `prefetchPacks(gitdir, { maxPacks? })` — warm all pack files in parallel before a sequential walk (skipped past `maxPacks * 2` entries).
-- `invalidate(pathPrefix)` — drop hints under the prefix and forward to the store's `invalidate` if it has one.
+- `registerGitdir(gitdir, { absentFiles? })` — declare an existing gitdir: `stat` answers "directory" and each top-level `absentFiles` entry answers `ENOENT`, with zero store calls. isomorphic-git stats the gitdir on every command.
+- `detectLooseObjects(gitdir)` — detect the loose-object hint up front (otherwise done on the first loose read).
+- `prefetchPacks(gitdir, { maxPacks? })` — warm every `.pack`/`.idx` in parallel before a sequential walk (skipped past `maxPacks * 2` entries).
+- `invalidate(pathPrefix)` — drop hints and registered gitdirs under the prefix and forward to the store's `invalidate` if it has one.
+
+### Git layout
+
+`classifyGitdirPath(path)` turns a gitdir-relative path into a typed `GitdirEntry` (`head`, `config`, `refs`, `objects-dir`, `pack-dir`, `pack-file`, `loose-object`, `other`); `isMutableGitdirEntry(entry)` is true for the ones that change between pushes. `parsePackFileName`/`parsePackDirectory`/`packFileName` give typed access to `objects/pack` entries.
 
 ### `S3ObjectStore({ client, bucket, prefix?, contentType? })`
 

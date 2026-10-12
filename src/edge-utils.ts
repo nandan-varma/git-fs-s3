@@ -89,7 +89,9 @@ export function fromHex(hex: string): Uint8Array<ArrayBuffer> {
 // ---------------------------------------------------------------------------
 
 /** SHA-1 hash via Web Crypto API. Returns a hex string. */
-export async function sha1(data: Uint8Array | string): Promise<string> {
+export async function sha1(
+	data: Uint8Array<ArrayBuffer> | string,
+): Promise<string> {
 	const bytes = typeof data === "string" ? encodeUtf8(data) : data;
 	const hash = await globalThis.crypto.subtle.digest("SHA-1", bytes);
 	return toHex(new Uint8Array(hash));
@@ -99,12 +101,9 @@ export async function sha1(data: Uint8Array | string): Promise<string> {
 // Compression
 // ---------------------------------------------------------------------------
 
-/**
- * Deflate compress via the CompressionStream Web API.
- * Falls back to throwing if CompressionStream is unavailable (very old runtimes).
- */
+/** Deflate (zlib) via the CompressionStream Web API. */
 export async function deflate(
-	data: Uint8Array,
+	data: Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
 	const stream = new Blob([data])
 		.stream()
