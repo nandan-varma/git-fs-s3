@@ -68,7 +68,13 @@ export async function collectReachableOids(
 			for (const parent of commit.parent) children.push([parent, "commit"]);
 		} else if (obj.type === "tree") {
 			const tree = obj.object as { oid: string; type: string }[];
-			for (const entry of tree) children.push([entry.oid, entry.type]);
+			for (const entry of tree) {
+				// Gitlinks (submodules, mode 160000) point at commits in another
+				// repository; git never stores them here, so following one would
+				// report a "missing" object and fail every walk over that history.
+				if (entry.type === "commit") continue;
+				children.push([entry.oid, entry.type]);
+			}
 		} else if (obj.type === "tag") {
 			children.push([(obj.object as { object: string }).object, undefined]);
 		}
