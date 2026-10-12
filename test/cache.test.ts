@@ -2,6 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 import { createCachedStore, MemoryObjectStore } from "../src/index.js";
 
 describe("createCachedStore", () => {
+	it("returns the cached bytes without copying when copy is false", async () => {
+		const inner = new MemoryObjectStore();
+		await inner.put("k", new Uint8Array([1, 2, 3]));
+		const cached = createCachedStore(inner, { copy: false });
+		const first = await cached.get("k");
+		expect(await cached.get("k")).toBe(first);
+	});
+
+	it("returns a fresh copy per hit by default", async () => {
+		const inner = new MemoryObjectStore();
+		await inner.put("k", new Uint8Array([1, 2, 3]));
+		const cached = createCachedStore(inner);
+		const first = await cached.get("k");
+		const second = await cached.get("k");
+		expect(second).not.toBe(first);
+		expect(second).toEqual(first);
+	});
+
 	it("serves repeat reads from cache", async () => {
 		const inner = new MemoryObjectStore();
 		await inner.put("k", new Uint8Array([1, 2]));

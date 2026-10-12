@@ -52,6 +52,14 @@ export interface CacheOptions {
 	 * single backend request. Default true.
 	 */
 	coalesce?: boolean;
+	/**
+	 * Return defensive copies from `get` (and copy on admit), so a caller
+	 * mutating returned bytes can't corrupt the cache. Default true. Set
+	 * false when no reader mutates results (isomorphic-git doesn't): every
+	 * hit otherwise copies the whole entry, which for packfiles is megabytes
+	 * per read.
+	 */
+	copy?: boolean;
 	/** Called when a read is answered from cache. */
 	onHit?: (key: string) => void;
 	/** Called when a read has to go to the backing store. */
@@ -117,6 +125,8 @@ export function createCachedStore(
 	const cacheMisses = options.cacheMisses ?? false;
 	const cacheLists = options.cacheLists ?? false;
 	const coalesce = options.coalesce ?? true;
+	const copy = options.copy ?? true;
+	const clone = (data: Uint8Array) => (copy ? data.slice() : data);
 	const onHit = options.onHit;
 	const onMiss = options.onMiss;
 
@@ -137,7 +147,7 @@ export function createCachedStore(
 
 	const admit = (key: string, data: Uint8Array) => {
 		if (data.byteLength <= maxEntryBytes) {
-			cache.set(key, data.slice(), { ttl: ttlForKey?.(key) });
+			cache.set(key, clone(data), { ttl: ttlForKey?.(key) });
 		}
 	};
 
@@ -168,7 +178,7 @@ export function createCachedStore(
 			const cached = cache.get(key);
 			if (cached !== undefined) {
 				onHit?.(key);
-				return cached === MISS ? null : cached.slice();
+				return cached === MISS ? null : clone(cached);
 			}
 			const data = await coalesced(pendingGets, key, async () => {
 				onMiss?.(key);
@@ -180,7 +190,7 @@ export function createCachedStore(
 				}
 				return fetched;
 			});
-			return data === null ? null : data.slice();
+			return data === null ? null : clone(data);
 		},
 
 		async put(key: string, data: Uint8Array): Promise<void> {
