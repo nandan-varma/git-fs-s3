@@ -12,7 +12,7 @@ import { type GitHttpResult, type HttpHooks, runStep } from "./types.js";
 export type GitService = "git-upload-pack" | "git-receive-pack";
 
 /** All refs with resolved oids, plus the symref HEAD should advertise. */
-export async function listAllRefs(repo: Repo, defaultBranch = "main") {
+export async function listAllRefs(repo: Repo, defaultBranch: string) {
 	const [branches, tagNames] = await Promise.all([
 		listBranches(repo),
 		listLooseRefNames(repo, "refs/tags").then(
@@ -62,7 +62,8 @@ export async function listAllRefs(repo: Repo, defaultBranch = "main") {
 
 export interface InfoRefsOptions {
 	service: GitService;
-	defaultBranch?: string;
+	/** Advertised as HEAD when HEAD itself doesn't name an existing branch. */
+	defaultBranch: string;
 	/** Advertised in the agent capability. Default "git-fs-s3". */
 	agent?: string;
 }
@@ -84,7 +85,7 @@ export async function handleInfoRefs(
 	const { service } = options;
 	const agent = options.agent ?? "git-fs-s3";
 	const { refs, headSymref } = await runStep(hooks, "listAllRefs", () =>
-		listAllRefs(repo, options.defaultBranch ?? "main"),
+		listAllRefs(repo, options.defaultBranch),
 	);
 
 	const isUpload = service === "git-upload-pack";

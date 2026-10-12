@@ -19,10 +19,10 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 
 <ApiSignature
 	name="createBranchFrom"
-	signature="createBranchFrom(repo: Repo, name: string, startPoint?: string): Promise<void>"
+	signature="createBranchFrom(repo: Repo, name: string, startPoint: string): Promise<void>"
 	params={[
 		{ name: 'name', type: 'string', description: 'The new branch name.' },
-		{ name: 'startPoint', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'startPoint', type: 'string', description: 'The branch the new one starts from.' },
 	]}
 >
 	Creates `name` pointing at the tip of `startPoint`. No checkout — this

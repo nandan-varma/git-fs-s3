@@ -196,7 +196,7 @@ export async function listBranches(repo: Repo): Promise<Branch[]> {
 export async function createBranchFrom(
 	repo: Repo,
 	name: string,
-	startPoint = "main",
+	startPoint: string,
 ): Promise<void> {
 	assertSafeBranchName(name);
 	assertSafeBranchName(startPoint);

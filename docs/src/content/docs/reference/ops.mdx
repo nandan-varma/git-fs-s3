@@ -45,12 +45,12 @@ signatures.
 
 <ApiSignature
 	name="getFileContent"
-	signature="getFileContent(repo: Repo, filePath: string, ref?: string): Promise<Uint8Array>"
-	params={[{ name: 'ref', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true }]}
+	signature="getFileContent(repo: Repo, filePath: string, ref: string): Promise<Uint8Array>"
 	returns="Promise<Uint8Array>"
 >
-	A file's raw bytes at a ref. Throws `GitPathNotFoundError` when the path
-	doesn't exist.
+	A file's raw bytes at a ref (branch name or commit sha). Throws
+	`GitRefNotFoundError` when the ref doesn't resolve and
+	`GitPathNotFoundError` when the path doesn't exist.
 </ApiSignature>
 
 <ApiSignature
@@ -83,12 +83,14 @@ pattern.
 
 <ApiSignature
 	name="getTreeFromRef"
-	signature="getTreeFromRef(repo: Repo, options?: { ref?, treePath? }, hooks?: OpsHooks): Promise<TreeEntry[]>"
+	signature="getTreeFromRef(repo: Repo, options: { ref, treePath? }, hooks?: OpsHooks): Promise<TreeEntry[]>"
 	returns="Promise<TreeEntry[]>"
 >
-	List a directory at the tip of a ref. `[]` for an empty repo/unborn
-	branch; throws `GitPathNotFoundError` when `treePath` doesn't exist.
-	Results are memoized per head sha.
+	List a directory at the tip of a ref. Throws `GitRefNotFoundError` when the
+	ref doesn't resolve (an empty repo's unborn branch included) and
+	`GitPathNotFoundError` when `treePath` doesn't exist. `getCommitLog`, by
+	contrast, returns `[]` for an unborn branch — an empty history is a real
+	answer. Results are memoized per head sha.
 </ApiSignature>
 
 ## Merge

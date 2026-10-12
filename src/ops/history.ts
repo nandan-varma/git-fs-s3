@@ -1,6 +1,10 @@
 import git from "isomorphic-git";
 import { decodeUtf8, hasNullByte, toBase64 } from "../edge-utils.js";
-import { GitObjectNotFoundError, GitPathNotFoundError } from "../git-errors.js";
+import {
+	GitObjectNotFoundError,
+	GitPathNotFoundError,
+	GitRefNotFoundError,
+} from "../git-errors.js";
 import { qualifyBranchRef } from "../refs.js";
 import { findTreeEntry, listTreeEntries, type TreeEntry } from "./tree.js";
 import { type OpsHooks, type Repo, runStep } from "./types.js";
@@ -63,7 +67,14 @@ export interface CommitInfo {
  * by an `isNotFound`-style check downstream (see getTreeFromRef/getCommitLog).
  */
 export async function resolveCommit(repo: Repo, ref: string) {
-	const oid = await git.resolveRef({ ...repo, ref: qualifyBranchRef(ref) });
+	const oid = await git
+		.resolveRef({ ...repo, ref: qualifyBranchRef(ref) })
+		.catch((err: unknown) => {
+			if (isNotFound(err)) {
+				throw new GitRefNotFoundError(`Ref ${ref} does not exist`);
+			}
+			throw err;
+		});
 	const result = await wrapMissingObject(
 		git.readCommit({ ...repo, oid }),
 		`${repo.gitdir} commit ${oid}`,
@@ -84,7 +95,7 @@ export async function getBlob(repo: Repo, sha: string): Promise<Uint8Array> {
 export async function getFileContent(
 	repo: Repo,
 	filePath: string,
-	ref = "main",
+	ref: string,
 	hooks?: OpsHooks,
 ): Promise<Uint8Array> {
 	// A blob page needs a commit, one or more tree objects, and the blob. On a
@@ -129,7 +140,7 @@ function isFullyWalked(commits: CommitInfo[]): boolean {
 }
 
 export interface CommitLogOptions {
-	ref?: string;
+	ref: string;
 	depth?: number;
 	/**
 	 * Pass the head sha when the caller already resolved `ref` — resolveRef
@@ -148,10 +159,10 @@ export interface CommitLogOptions {
  */
 export async function getCommitLog(
 	repo: Repo,
-	options: CommitLogOptions = {},
+	options: CommitLogOptions,
 	hooks?: OpsHooks,
 ): Promise<CommitInfo[]> {
-	const ref = options.ref ?? "main";
+	const { ref } = options;
 	const depth = options.depth ?? 50;
 
 	let headSha: string;
@@ -225,28 +236,19 @@ export async function getFileFromRef(
 }
 
 /**
- * List a directory at the tip of a ref. Returns [] for an empty repo/unborn
- * branch; throws GitPathNotFoundError when `treePath` doesn't exist. Results
- * are memoized per head sha (auto-invalidates on push).
+ * List a directory at the tip of a ref. Throws GitRefNotFoundError when the
+ * ref doesn't resolve (including an empty repo's unborn branch) and
+ * GitPathNotFoundError when `treePath` doesn't exist. Results are memoized per
+ * head sha (auto-invalidates on push).
  */
 export async function getTreeFromRef(
 	repo: Repo,
-	options: { ref?: string; treePath?: string } = {},
+	options: { ref: string; treePath?: string },
 	hooks?: OpsHooks,
 ): Promise<TreeEntry[]> {
-	const ref = options.ref ?? "main";
+	const { ref } = options;
 	const treePath = options.treePath ?? "";
-
-	let commit: Awaited<ReturnType<typeof resolveCommit>>["commit"];
-	let headSha: string;
-	try {
-		const resolved = await resolveCommit(repo, ref);
-		commit = resolved.commit;
-		headSha = resolved.oid;
-	} catch (err: unknown) {
-		if (isNotFound(err)) return [];
-		throw err;
-	}
+	const { commit, oid: headSha } = await resolveCommit(repo, ref);
 
 	const cacheKey = `tree:${repo.gitdir}:${headSha}:${treePath}`;
 	const cached = hooks?.resultCache?.get<TreeEntry[]>(cacheKey);

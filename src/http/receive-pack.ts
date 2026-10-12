@@ -52,7 +52,7 @@ export function parseReceivePackBody(body: Uint8Array): {
 /** Initialize the repo when its HEAD doesn't exist yet (first push). */
 export async function ensureRepoInitialized(
 	repo: Repo,
-	defaultBranch = "main",
+	defaultBranch: string,
 ): Promise<void> {
 	const fsp = rawFs(repo);
 	try {
@@ -207,7 +207,8 @@ export function receivePackResponse(results: RefUpdateResult[]): GitHttpResult {
 }
 
 export interface ApplyReceivePackOptions {
-	defaultBranch?: string;
+	/** HEAD's branch when a push initializes an empty repository. */
+	defaultBranch: string;
 	/**
 	 * Repack tuning, or `false` to skip repacking entirely. The returned
 	 * `stalePackPaths` are gitdir-relative pack files the repack deleted from
@@ -227,10 +228,10 @@ export interface ApplyReceivePackOptions {
 export async function applyReceivePack(
 	repo: Repo,
 	parsed: { refUpdates: RefUpdateCommand[]; packData: Uint8Array },
-	options?: ApplyReceivePackOptions,
+	options: ApplyReceivePackOptions,
 	hooks?: HttpHooks,
 ): Promise<{ results: RefUpdateResult[]; stalePackPaths: string[] }> {
-	await ensureRepoInitialized(repo, options?.defaultBranch ?? "main");
+	await ensureRepoInitialized(repo, options.defaultBranch);
 	const preflight = await validateRefUpdates(repo, parsed.refUpdates);
 	const acceptedUpdates = parsed.refUpdates.filter(
 		(_, index) => preflight[index]?.ok,
@@ -290,7 +291,7 @@ export async function applyReceivePack(
 				) ?? result)
 			: result,
 	);
-	const repackOptions = options?.repack;
+	const repackOptions = options.repack;
 	const stalePackPaths =
 		repackOptions === false || !results.some((result) => result.ok)
 			? []

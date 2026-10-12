@@ -53,9 +53,9 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 
 <ApiSignature
 	name="getTreeFromRef"
-	signature="getTreeFromRef(repo: Repo, options?: { ref?, treePath? }, hooks?: OpsHooks): Promise<TreeEntry[]>"
+	signature="getTreeFromRef(repo: Repo, options: { ref, treePath? }, hooks?: OpsHooks): Promise<TreeEntry[]>"
 	params={[
-		{ name: 'options.ref', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'options.ref', type: 'string', description: 'Branch name or commit sha. A ref that doesn\'t resolve throws <code>GitRefNotFoundError</code>.' },
 		{ name: 'options.treePath', type: 'string', description: 'Defaults to the repo root.', optional: true },
 	]}
 	returns="Promise<TreeEntry[]>"
@@ -79,9 +79,9 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 
 <ApiSignature
 	name="getCommitLog"
-	signature="getCommitLog(repo: Repo, options?: CommitLogOptions, hooks?: OpsHooks): Promise<CommitInfo[]>"
+	signature="getCommitLog(repo: Repo, options: CommitLogOptions, hooks?: OpsHooks): Promise<CommitInfo[]>"
 	params={[
-		{ name: 'options.ref', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'options.ref', type: 'string', description: 'Branch name or commit sha. An unborn branch yields <code>[]</code>.' },
 		{ name: 'options.depth', type: 'number', description: 'Defaults to 50.', optional: true },
 		{
 			name: 'options.knownHeadSha',

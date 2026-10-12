@@ -21,7 +21,7 @@ for a full worked example.
 	signature="handleInfoRefs(repo: Repo, options: InfoRefsOptions, hooks?: HttpHooks): Promise<GitHttpResult>"
 	params={[
 		{ name: 'options.service', type: '"git-upload-pack" | "git-receive-pack"', description: '' },
-		{ name: 'options.defaultBranch', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'options.defaultBranch', type: 'string', description: 'Advertised as HEAD when HEAD itself doesn\'t name an existing branch.' },
 		{ name: 'options.agent', type: 'string', description: 'Advertised in the capability line. Default <code>"git-fs-s3"</code>.', optional: true },
 	]}
 	returns="Promise<GitHttpResult>"
@@ -75,9 +75,9 @@ for a full worked example.
 
 <ApiSignature
 	name="applyReceivePack"
-	signature="applyReceivePack(repo: Repo, parsed: ReturnType<typeof parseReceivePackBody>, options?: ApplyReceivePackOptions, hooks?: HttpHooks): Promise<{ results, stalePackPaths }>"
+	signature="applyReceivePack(repo: Repo, parsed: ReturnType<typeof parseReceivePackBody>, options: ApplyReceivePackOptions, hooks?: HttpHooks): Promise<{ results, stalePackPaths }>"
 	params={[
-		{ name: 'options.defaultBranch', type: 'string', description: 'Defaults to <code>"main"</code>.', optional: true },
+		{ name: 'options.defaultBranch', type: 'string', description: 'HEAD\'s branch when a push initializes an empty repository.' },
 		{
 			name: 'options.repack',
 			type: 'RepackOptions | false',

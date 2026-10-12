@@ -26,7 +26,10 @@ describe("handleInfoRefs", () => {
 			defaultBranch: "main",
 		});
 
-		const result = await handleInfoRefs(repo, { service: "git-upload-pack" });
+		const result = await handleInfoRefs(repo, {
+			service: "git-upload-pack",
+			defaultBranch: "main",
+		});
 
 		expect(result.status).toBe(200);
 		expect(result.headers["Content-Type"]).toBe(
@@ -81,7 +84,10 @@ describe("handleInfoRefs", () => {
 			defaultBranch: "main",
 		});
 
-		const result = await handleInfoRefs(repo, { service: "git-receive-pack" });
+		const result = await handleInfoRefs(repo, {
+			service: "git-receive-pack",
+			defaultBranch: "main",
+		});
 		expect(result.headers["Content-Type"]).toBe(
 			"application/x-git-receive-pack-advertisement",
 		);
@@ -102,6 +108,7 @@ describe("handleInfoRefs", () => {
 
 		const result = await handleInfoRefs(repo, {
 			service: "git-upload-pack",
+			defaultBranch: "main",
 			agent: "my-app/1.0",
 		});
 		const lines = parsePktLines(result.body);

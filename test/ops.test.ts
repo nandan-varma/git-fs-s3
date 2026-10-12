@@ -4,6 +4,7 @@ import {
 	createGitFs,
 	GitObjectNotFoundError,
 	GitPathNotFoundError,
+	GitRefNotFoundError,
 	MemoryObjectStore,
 } from "../src/index.js";
 import {
@@ -126,8 +127,13 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		}
 	});
 
-	it("returns [] for an unborn branch instead of throwing", async () => {
-		expect(await getTreeFromRef(repo, { ref: "ghost" })).toEqual([]);
+	it("reports a missing ref for a tree, but an empty history for a log", async () => {
+		await expect(getTreeFromRef(repo, { ref: "ghost" })).rejects.toBeInstanceOf(
+			GitRefNotFoundError,
+		);
+		await expect(getFileContent(repo, "a.txt", "ghost")).rejects.toBeInstanceOf(
+			GitRefNotFoundError,
+		);
 		expect(await getCommitLog(repo, { ref: "ghost" })).toEqual([]);
 	});
 
