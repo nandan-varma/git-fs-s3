@@ -310,14 +310,31 @@ describe("git-aware optimizations", () => {
 		);
 		await gitFs.detectLooseObjects(gitdir); // "none"
 
+		// Written behind the fs's back, so the "none" hint is now stale.
+		await store.put(`${gitdir}/objects/aa/${oid}`, new Uint8Array([7]));
 		gitFs.invalidate(gitdir);
-		const getSpy = vi.spyOn(store, "get");
-		// Hint gone: the read reaches the store again.
-		await expect(
-			gitFs.promises.readFile(`${gitdir}/objects/aa/${oid}`),
-		).rejects.toMatchObject({ code: "ENOENT" });
-		expect(getSpy).toHaveBeenCalledTimes(1);
+		// Hint gone: the read re-detects and finds the object.
+		expect(
+			await gitFs.promises.readFile(`${gitdir}/objects/aa/${oid}`),
+		).toEqual(new Uint8Array([7]));
 		expect(invalidateSpy).toHaveBeenCalledWith(gitdir);
+	});
+
+	it("detects the hint on the first loose read instead of probing the object", async () => {
+		const { store, fs } = optimizedSetup();
+		await store.put(`${gitdir}/objects/pack/p.pack`, new Uint8Array([1]));
+		const getSpy = vi.spyOn(store, "get");
+		const listSpy = vi.spyOn(store, "list");
+
+		await Promise.all(
+			["aa", "bb"].map((d) =>
+				expect(
+					fs.readFile(`${gitdir}/objects/${d}/${oid}`),
+				).rejects.toMatchObject({ code: "ENOENT" }),
+			),
+		);
+		expect(getSpy).not.toHaveBeenCalled();
+		expect(listSpy).toHaveBeenCalledTimes(1); // coalesced
 	});
 
 	it("does not re-derive a hint that is already live", async () => {

@@ -128,11 +128,30 @@ export function createGitFs(
 		return path.slice(0, match.index);
 	}
 
-	function knownAbsent(path: string): boolean {
+	const pendingDetections = new Map<string, Promise<void>>();
+
+	/**
+	 * Resolve the loose-object hint for `path`'s gitdir before answering, so a
+	 * read that runs before any explicit `detectLooseObjects` call (e.g. the
+	 * first commit read of a request) doesn't pay a doomed GET. One coalesced
+	 * listing per gitdir, cached for `hintTtlMs`.
+	 */
+	async function knownAbsent(path: string): Promise<boolean> {
 		if (structurallyAbsent?.(path)) return true;
 		if (!useLooseHints) return false;
 		const scope = looseScope(path);
-		return scope !== null && looseHints.get(scope) === "none";
+		if (scope === null) return false;
+		if (!looseHints.has(scope)) {
+			let pending = pendingDetections.get(scope);
+			if (!pending) {
+				pending = detectLooseObjects(scope).finally(() =>
+					pendingDetections.delete(scope),
+				);
+				pendingDetections.set(scope, pending);
+			}
+			await pending;
+		}
+		return looseHints.get(scope) === "none";
 	}
 
 	async function isDirectory(dirKey: string): Promise<boolean> {
@@ -144,7 +163,7 @@ export function createGitFs(
 
 	async function stat(filepath: string, syscall: string): Promise<Stat> {
 		const path = normalizePath(filepath);
-		if (knownAbsent(path)) throw enoent(syscall, filepath);
+		if (await knownAbsent(path)) throw enoent(syscall, filepath);
 		const k = toKey(path);
 		if (k === prefix || k === "") return makeStat("dir", 0);
 		const fileStat = await store.head(k);
@@ -161,7 +180,7 @@ export function createGitFs(
 	const promises: GitFsClient["promises"] = {
 		async readFile(filepath, opts) {
 			const path = normalizePath(filepath);
-			if (knownAbsent(path)) throw enoent("open", filepath);
+			if (await knownAbsent(path)) throw enoent("open", filepath);
 			const data = await store.get(toKey(path));
 			if (data === null) throw enoent("open", filepath);
 			return resolveEncoding(opts) === "utf8" ? textDecoder.decode(data) : data;

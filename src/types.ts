@@ -49,8 +49,9 @@ export interface GitFsOptions {
 	/**
 	 * Track, per git directory, whether any loose objects exist at all.
 	 * Fully packed repositories then skip the doomed round trip probing a
-	 * loose-object path that is guaranteed to miss — but only after an
-	 * explicit `detectLooseObjects(gitdir)` call has registered the gitdir.
+	 * loose-object path that is guaranteed to miss. The first loose-object
+	 * read under a gitdir detects its hint (one listing) if no explicit
+	 * `detectLooseObjects(gitdir)` call already has.
 	 * Default false.
 	 */
 	looseObjectHints?: boolean;
