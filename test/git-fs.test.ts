@@ -252,6 +252,11 @@ describe("git-aware optimizations", () => {
 		const { store, gitFs } = optimizedSetup();
 		await store.put(`${gitdir}/objects/pack/pack-1.pack`, new Uint8Array([1]));
 		await store.put(`${gitdir}/objects/pack/pack-1.idx`, new Uint8Array([2]));
+		await store.put(
+			`${gitdir}/objects/pack/pack-1.bitmap`,
+			new Uint8Array([3]),
+		);
+		await store.put(`${gitdir}/objects/pack/pack-1.rev`, new Uint8Array([4]));
 		const getSpy = vi.spyOn(store, "get");
 
 		await gitFs.prefetchPacks(gitdir);

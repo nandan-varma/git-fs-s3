@@ -263,7 +263,11 @@ export function createGitFs(
 	): Promise<void> {
 		const maxPacks = prefetchOptions?.maxPacks ?? 30;
 		const packDir = `${normalizePath(gitdir)}/objects/pack`;
-		const entries = await promises.readdir(packDir).catch(() => []);
+		// Only .pack/.idx: isomorphic-git never reads .bitmap/.rev/.keep, so
+		// fetching them is a wasted GET and wasted cache space.
+		const entries = (await promises.readdir(packDir).catch(() => [])).filter(
+			(name) => name.endsWith(".pack") || name.endsWith(".idx"),
+		);
 		if (entries.length > maxPacks * 2) {
 			await detectLooseObjects(gitdir);
 			return;
