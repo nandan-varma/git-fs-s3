@@ -38,13 +38,21 @@ const MISSING_OBJECT_RETRY_DELAY_MS = 200;
  * for reading every object in the repo, not just the ones it introduced,
  * and one transient read failure anywhere in that whole history rejects an
  * otherwise-valid push.
+ *
+ * Commits, trees and tags are read once each (parsed). Blobs have no
+ * children, so `verifyBlobs: false` records a blob from its tree entry
+ * without reading (and inflating) it — for callers that read every blob
+ * themselves afterwards anyway, like upload-pack's `packObjects`. Leave it
+ * true wherever the walk *is* the existence check (receive-pack, repack).
  */
 export async function collectReachableOids(
 	repo: Repo,
 	startOids: string[],
 	hooks?: HttpHooks,
 	haveOids?: ReadonlySet<string> | readonly string[],
+	options?: { verifyBlobs?: boolean },
 ): Promise<ReachabilityResult> {
+	const verifyBlobs = options?.verifyBlobs ?? true;
 	const have = haveOids instanceof Set ? haveOids : new Set(haveOids ?? []);
 	const seen = new Set<string>();
 	let complete = true;
@@ -52,28 +60,26 @@ export async function collectReachableOids(
 
 	async function readAndVisitChildren(oid: string): Promise<void> {
 		const obj = await git.readObject({ ...repo, oid });
-		// Add to seen only after a successful read so failed reads are excluded
-		// from any pack built from this set.
 		seen.add(oid);
-		let children: string[] = [];
+		const children: [string, string | undefined][] = [];
 		if (obj.type === "commit") {
-			const { commit } = await git.readCommit({ ...repo, oid });
-			children = [commit.tree, ...commit.parent];
+			const commit = obj.object as { tree: string; parent: string[] };
+			children.push([commit.tree, "tree"]);
+			for (const parent of commit.parent) children.push([parent, "commit"]);
 		} else if (obj.type === "tree") {
-			const { tree } = await git.readTree({ ...repo, oid });
-			children = tree.map((e) => e.oid);
+			const tree = obj.object as { oid: string; type: string }[];
+			for (const entry of tree) children.push([entry.oid, entry.type]);
 		} else if (obj.type === "tag") {
-			const { tag } = await git.readTag({ ...repo, oid });
-			children = [tag.object];
+			children.push([(obj.object as { object: string }).object, undefined]);
 		}
-		await Promise.all(children.map(visit));
+		await Promise.all(children.map(([child, type]) => visit(child, type)));
 	}
 
-	function visit(oid: string): Promise<void> {
+	function visit(oid: string, type?: string): Promise<void> {
 		const existing = promises.get(oid);
 		if (existing) return existing;
 
-		if (have.has(oid)) {
+		if (have.has(oid) || (type === "blob" && !verifyBlobs)) {
 			seen.add(oid);
 			const p = Promise.resolve();
 			promises.set(oid, p);
@@ -98,6 +104,6 @@ export async function collectReachableOids(
 		return p;
 	}
 
-	await Promise.all(startOids.map(visit));
+	await Promise.all(startOids.map((oid) => visit(oid)));
 	return { oids: Array.from(seen), complete };
 }

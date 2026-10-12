@@ -150,6 +150,36 @@ describe("handleUploadPack", () => {
 		expect(log.length).toBe(3);
 	});
 
+	it("serves only objects the client lacks on an incremental fetch", async () => {
+		const repo = makeRepo();
+		await seed(repo, 3);
+		const [head, parent] = await git.log({ ...repo, ref: "main", depth: 2 });
+		if (!head || !parent) throw new Error("seed failed");
+
+		const body = concatBuffers(
+			pktLine(`want ${head.oid}\n`),
+			new TextEncoder().encode("0000"),
+			pktLine(`have ${parent.oid}\n`),
+			pktLine("done\n"),
+		);
+		const result = await handleUploadPack(repo, body);
+		expect(result.status).toBe(200);
+		const text = new TextDecoder().decode(result.body);
+		const packStart = text.indexOf("PACK");
+		expect(packStart).toBeGreaterThan(0);
+		const packfile = decodeSideBandPackfile(
+			result.body.subarray(text.lastIndexOf("\n", packStart) + 1),
+		);
+		// Header: "PACK", version, object count (big-endian u32).
+		const count = new DataView(
+			packfile.buffer,
+			packfile.byteOffset + 8,
+			4,
+		).getUint32(0);
+		// New commit, its root tree, and the one changed blob.
+		expect(count).toBe(3);
+	});
+
 	it("returns a bare NAK (no pack) when haves are sent without done", async () => {
 		const repo = makeRepo();
 		await seed(repo, 1);

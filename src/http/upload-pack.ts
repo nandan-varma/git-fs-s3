@@ -105,22 +105,31 @@ export async function handleUploadPack(
 		await runStep(hooks, "beforeWalk", options.beforeWalk);
 	}
 
-	const { oids: wantOids } = await runStep(
-		hooks,
-		"collectReachableOids(wants)",
-		() => collectReachableOids(repo, wants, hooks),
-	);
-	let oids = wantOids;
-
+	// Walk haves first so the wants walk can stop at anything the client
+	// already has, instead of re-walking all shared history a second time.
+	let haveSet: ReadonlySet<string> | undefined;
 	if (haves.length > 0) {
 		const { oids: haveOids } = await runStep(
 			hooks,
 			"collectReachableOids(haves)",
-			() => collectReachableOids(repo, haves, hooks),
+			() =>
+				collectReachableOids(repo, haves, hooks, undefined, {
+					verifyBlobs: false,
+				}),
 		);
-		const haveSet = new Set(haveOids);
-		oids = oids.filter((oid) => !haveSet.has(oid));
+		haveSet = new Set(haveOids);
 	}
+
+	const { oids: wantOids } = await runStep(
+		hooks,
+		"collectReachableOids(wants)",
+		() =>
+			collectReachableOids(repo, wants, hooks, haveSet, {
+				verifyBlobs: false,
+			}),
+	);
+	// Boundary oids are recorded as seen by the walk; drop them from the pack.
+	const oids = haveSet ? wantOids.filter((oid) => !haveSet.has(oid)) : wantOids;
 
 	const { packfile } = await runStep(
 		hooks,
