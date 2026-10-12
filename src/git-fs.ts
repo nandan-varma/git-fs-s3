@@ -105,6 +105,7 @@ export function createGitFs(
 ): GitFs {
 	const prefix = options.prefix ?? "";
 	const structurallyAbsent = options.isStructurallyAbsent;
+	const knownDirectory = options.isKnownDirectory;
 	const useLooseHints = options.looseObjectHints ?? false;
 	const onNote = options.onNote;
 
@@ -165,7 +166,9 @@ export function createGitFs(
 		const path = normalizePath(filepath);
 		if (await knownAbsent(path)) throw enoent(syscall, filepath);
 		const k = toKey(path);
-		if (k === prefix || k === "") return makeStat("dir", 0);
+		if (k === prefix || k === "" || knownDirectory?.(path)) {
+			return makeStat("dir", 0);
+		}
 		const fileStat = await store.head(k);
 		if (fileStat) return makeStat("file", fileStat.size);
 		// A loose-object path is always a leaf; when the object itself is

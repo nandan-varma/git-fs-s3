@@ -161,6 +161,19 @@ describe("git-aware optimizations", () => {
 		return { store, gitFs, fs: gitFs.promises };
 	}
 
+	it("isKnownDirectory answers stat with zero store calls", async () => {
+		const store = new MemoryObjectStore();
+		const fs = createGitFs(store, {
+			isKnownDirectory: (p) => p === gitdir,
+		}).promises;
+		const headSpy = vi.spyOn(store, "head");
+		const listSpy = vi.spyOn(store, "list");
+		const stat = await fs.stat(gitdir);
+		expect(stat.isDirectory()).toBe(true);
+		expect(headSpy).not.toHaveBeenCalled();
+		expect(listSpy).not.toHaveBeenCalled();
+	});
+
 	it("structural absence short-circuits readFile and stat with zero store calls", async () => {
 		const store = new MemoryObjectStore();
 		const gitFs = createGitFs(store, {
