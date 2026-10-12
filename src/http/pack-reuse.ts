@@ -199,11 +199,14 @@ export async function buildPackFromExistingPacks(
 
 	const indexes: IndexedPack[] = [];
 	for (const { base } of packs) {
+		// A pack without a readable index can't be reused.
 		const [pack, idx] = await Promise.all([
 			fsp.readFile(`${packDir}/${packFileName(base, "pack")}`),
 			fsp.readFile(`${packDir}/${packFileName(base, "idx")}`),
-		]);
-		if (typeof pack === "string" || typeof idx === "string") return null;
+		]).catch(() => [null, null]);
+		if (!(pack instanceof Uint8Array) || !(idx instanceof Uint8Array)) {
+			return null;
+		}
 		const indexed = indexPack(idx, pack);
 		if (!indexed) return null;
 		indexes.push(indexed);

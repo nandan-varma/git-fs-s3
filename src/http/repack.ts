@@ -1,6 +1,6 @@
 /**
- * Pack consolidation: merge packs into one verified, non-deltified pack,
- * leaving a dominant (already-compact) base pack untouched when there is one.
+ * Pack consolidation: merge all packs into one, reusing stored (possibly
+ * deltified) entries when every object is packed.
  *
  * Edge-compatible: uses Web Crypto (SHA-1), CompressionStream (deflate),
  * and Uint8Array throughout — no node:crypto, node:zlib, or Buffer.
@@ -14,7 +14,7 @@ import {
 	packFileName,
 	parsePackDirectory,
 } from "../pack-files.js";
-import { readPackIndex } from "./pack-reuse.js";
+import { buildPackFromExistingPacks } from "./pack-reuse.js";
 import { collectReachableOids } from "./reachability.js";
 import { type HttpHooks, rawFs } from "./types.js";
 
@@ -156,53 +156,6 @@ async function buildVerifiedPack(
  */
 export const REPACK_PACK_COUNT_THRESHOLD = 4;
 
-/**
- * Geometric repacking factor, as in `git repack --geometric=2`: a pack at
- * least this many times the size of all other packs combined is left as-is
- * and only the packs around it are rolled up.
- */
-const GEOMETRIC_FACTOR = 2;
-
-interface BasePack {
-	base: string;
-	oids: Set<string>;
-}
-
-/**
- * The pack to keep untouched under {@link GEOMETRIC_FACTOR}, if any.
- * Rewriting a dominant pack gains nothing (it's already one pack) and loses
- * its delta compression, since packs built here are never deltified — a
- * git-pushed history can grow several-fold that way.
- */
-async function findBasePack(
-	repo: Repo,
-	packs: readonly PackFileName[],
-): Promise<BasePack | null> {
-	const fsp = rawFs(repo);
-	const packDir = `${repo.gitdir}/objects/pack`;
-	const sized = await Promise.all(
-		packs.map(async (pack) => {
-			const stat = (await fsp.stat(`${packDir}/${pack.name}`)) as {
-				size: number;
-			};
-			return { pack, size: stat.size };
-		}),
-	);
-	sized.sort((a, b) => b.size - a.size);
-	const [largest, ...rest] = sized;
-	if (!largest) return null;
-	const restTotal = rest.reduce((sum, { size }) => sum + size, 0);
-	if (largest.size < GEOMETRIC_FACTOR * restTotal) return null;
-	const idx = await fsp.readFile(
-		`${packDir}/${packFileName(largest.pack.base, "idx")}`,
-	);
-	if (typeof idx === "string") return null;
-	const entries = readPackIndex(idx);
-	return entries
-		? { base: largest.pack.base, oids: new Set(entries.map((e) => e.oid)) }
-		: null;
-}
-
 async function readPackDirectory(repo: Repo): Promise<PackFileName[]> {
 	const entries = await rawFs(repo)
 		.readdir(`${repo.gitdir}/objects/pack`)
@@ -262,33 +215,15 @@ export async function repackRepository(
 		if (!complete || reachable.length === 0) return [];
 
 		const packDir = `${repo.gitdir}/objects/pack`;
-		const before = await readPackDirectory(repo);
-		const base = await findBasePack(
-			repo,
-			before.filter((file) => file.kind === "pack"),
-		);
-		const oids = base
-			? reachable.filter((oid) => !base.oids.has(oid))
-			: reachable;
-		const removeAllExcept = async (keep: ReadonlySet<string>) => {
-			const stale = (await readPackDirectory(repo)).filter(
-				(file) => !keep.has(file.base),
-			);
-			await Promise.all(
-				stale.map((file) =>
-					fsp.unlink(`${packDir}/${file.name}`).catch(() => {}),
-				),
-			);
-			return stale.map((file) => `objects/pack/${file.name}`);
-		};
-		const kept = new Set(base ? [base.base] : []);
-
-		// Everything reachable is already in the base pack: the other packs
-		// are pure redundancy.
-		if (oids.length === 0) return removeAllExcept(kept);
-
-		const objects = await readAndVerifyObjects(repo, oids);
-		const packBuffer = await buildVerifiedPack(oids, objects);
+		// Copy stored entries when everything is packed: keeps deltas, so
+		// the consolidated pack is as compact as its sources. Loose objects
+		// fall back to a verified, non-deltified rebuild.
+		const packBuffer =
+			(await buildPackFromExistingPacks(repo, reachable)) ??
+			(await buildVerifiedPack(
+				reachable,
+				await readAndVerifyObjects(repo, reachable),
+			));
 
 		await fsp.mkdir(packDir, { recursive: true });
 		const newBase = `pack-${Date.now()}`;
@@ -301,12 +236,10 @@ export async function repackRepository(
 			filepath: newPackFile,
 		});
 
-		const expected = new Set(oids);
+		// indexPack re-hashes every object it indexes, so this also verifies
+		// the content. Reused packs may carry extra delta bases: superset is fine.
 		const indexed = new Set(indexedOids);
-		if (
-			indexed.size !== expected.size ||
-			oids.some((oid) => !indexed.has(oid))
-		) {
+		if (reachable.some((oid) => !indexed.has(oid))) {
 			await Promise.all(
 				(["pack", "idx"] as const).map((kind) =>
 					fsp
@@ -315,12 +248,19 @@ export async function repackRepository(
 				),
 			);
 			throw new Error(
-				"repack: indexed pack's oid set didn't match the verified reachable set — aborting",
+				"repack: indexed pack is missing reachable objects — aborting",
 			);
 		}
 
-		kept.add(newBase);
-		return removeAllExcept(kept);
+		const stale = (await readPackDirectory(repo)).filter(
+			(file) => file.base !== newBase,
+		);
+		await Promise.all(
+			stale.map((file) =>
+				fsp.unlink(`${packDir}/${file.name}`).catch(() => {}),
+			),
+		);
+		return stale.map((file) => `objects/pack/${file.name}`);
 	} catch (err) {
 		hooks?.onWarn?.("repack failed (non-fatal)", err);
 		return [];

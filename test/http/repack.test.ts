@@ -21,6 +21,7 @@ import {
 	commitFilesToBare,
 	type Repo,
 } from "../../src/ops/index.js";
+import { parsePackFileName } from "../../src/pack-files.js";
 
 const author = authorNow("Test", "test@example.com");
 
@@ -143,7 +144,7 @@ describe("repackRepository", () => {
 		expect(stalePaths).toEqual([]);
 	});
 
-	it("keeps a dominant base pack and consolidates only the small packs around it", async () => {
+	it("consolidates fully packed repos by reusing entries, never growing", async () => {
 		const { repo, store } = makeRepo();
 		await git.init({
 			...repo,
@@ -183,6 +184,17 @@ describe("repackRepository", () => {
 				).join(""),
 			})),
 		});
+		// Total .pack bytes in the pack directory.
+		async function packBytes(): Promise<number> {
+			const { objects } = await store.list(`${packDir}/`);
+			return objects
+				.filter(
+					({ key }) =>
+						parsePackFileName(key.slice(packDir.length + 1))?.kind === "pack",
+				)
+				.reduce((sum, { size }) => sum + size, 0);
+		}
+
 		const base = await packLoose();
 		await fsp.writeFile(`${packDir}/${base}.bitmap`, new Uint8Array([1]));
 		const small: string[] = [];
@@ -196,20 +208,19 @@ describe("repackRepository", () => {
 			small.push(await packLoose());
 		}
 
+		const sourceBytes = await packBytes();
 		const stale = await repackRepository(repo, { threshold: 4 });
 
-		expect(new Set(stale)).toEqual(
-			new Set(
-				small.flatMap((n) => [
-					`objects/pack/${n}.pack`,
-					`objects/pack/${n}.idx`,
-				]),
-			),
+		expect(stale).toEqual(
+			expect.arrayContaining([
+				`objects/pack/${base}.pack`,
+				`objects/pack/${base}.bitmap`,
+				...small.map((n) => `objects/pack/${n}.pack`),
+			]),
 		);
 		const remaining = await fsp.readdir(packDir);
-		expect(remaining).toContain(`${base}.pack`);
-		expect(remaining).toContain(`${base}.idx`);
-		expect(remaining.filter((f) => f.endsWith(".pack"))).toHaveLength(2);
+		expect(remaining.filter((f) => f.endsWith(".pack"))).toHaveLength(1);
+		expect(await packBytes()).toBeLessThanOrEqual(sourceBytes);
 
 		const log = await git.log({ ...repo, ref: "main" });
 		expect(log.map((c) => c.commit.message)).toEqual([
