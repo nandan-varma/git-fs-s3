@@ -39,6 +39,16 @@ export interface ListResult {
 	prefixes: string[];
 }
 
+/** What a caller knows about a gitdir it registers with `registerGitdir`. */
+export interface GitdirFacts {
+	/**
+	 * Top-level gitdir files this backend never writes, such as
+	 * `packed-refs` or `shallow`; reading or statting them answers ENOENT
+	 * with zero store calls. isomorphic-git probes both on most commands.
+	 */
+	absentFiles?: readonly string[];
+}
+
 /** Options accepted by {@link ../git-fs.createGitFs}. */
 export interface GitFsOptions {
 	/**

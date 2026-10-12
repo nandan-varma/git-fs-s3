@@ -161,6 +161,22 @@ describe("git-aware optimizations", () => {
 		return { store, gitFs, fs: gitFs.promises };
 	}
 
+	it("registerGitdir's absentFiles short-circuit reads with zero store calls", async () => {
+		const store = new MemoryObjectStore();
+		const gitFs = createGitFs(store);
+		gitFs.registerGitdir(gitdir, { absentFiles: ["packed-refs"] });
+		const getSpy = vi.spyOn(store, "get");
+		await expect(
+			gitFs.promises.readFile(`${gitdir}/packed-refs`),
+		).rejects.toMatchObject({ code: "ENOENT" });
+		// Same name elsewhere (a branch called packed-refs) is untouched.
+		await store.put(`${gitdir}/refs/heads/packed-refs`, new Uint8Array([1]));
+		expect(
+			await gitFs.promises.readFile(`${gitdir}/refs/heads/packed-refs`),
+		).toEqual(new Uint8Array([1]));
+		expect(getSpy).toHaveBeenCalledTimes(1);
+	});
+
 	it("registerGitdir answers stat with zero store calls until invalidated", async () => {
 		const store = new MemoryObjectStore();
 		const gitFs = createGitFs(store);

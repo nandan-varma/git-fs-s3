@@ -48,6 +48,7 @@ export {
 } from "./retry.js";
 export { MemoryObjectStore } from "./stores/memory.js";
 export type {
+	GitdirFacts,
 	GitFsClient,
 	GitFsOptions,
 	ListOptions,

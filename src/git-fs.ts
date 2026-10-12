@@ -4,6 +4,7 @@ import { parsePackDirectory, READABLE_PACK_FILE_KINDS } from "./pack-files.js";
 import { normalizePath, toKey as toKeyWithPrefix } from "./path.js";
 import type {
 	Encoding,
+	GitdirFacts,
 	GitFsClient,
 	GitFsOptions,
 	ObjectStore,
@@ -93,7 +94,7 @@ export interface GitFs extends GitFsClient {
 	 * plus a listing. Register once the caller has confirmed the repository
 	 * exists by other means (e.g. its database row); `invalidate` forgets it.
 	 */
-	registerGitdir(gitdir: string): void;
+	registerGitdir(gitdir: string, facts?: GitdirFacts): void;
 }
 
 /**
@@ -131,7 +132,17 @@ export function createGitFs(
 	});
 
 	/** Gitdirs the caller vouched for via {@link GitFs.registerGitdir}. */
-	const registeredGitdirs = new LRUCache<string, true>({ max: 4096 });
+	const registeredGitdirs = new LRUCache<string, ReadonlySet<string>>({
+		max: 4096,
+	});
+
+	/** Whether `path` is a top-level file its registered gitdir lacks. */
+	function registeredAbsent(path: string): boolean {
+		const slash = path.lastIndexOf("/");
+		if (slash < 0) return false;
+		const absent = registeredGitdirs.get(path.slice(0, slash));
+		return absent?.has(path.slice(slash + 1)) ?? false;
+	}
 
 	/** The gitdir scope of a loose-object path, or null when it isn't one. */
 	function looseScope(path: string): string | null {
@@ -149,7 +160,7 @@ export function createGitFs(
 	 * listing per gitdir, cached for `hintTtlMs`.
 	 */
 	async function knownAbsent(path: string): Promise<boolean> {
-		if (structurallyAbsent?.(path)) return true;
+		if (structurallyAbsent?.(path) || registeredAbsent(path)) return true;
 		if (!useLooseHints) return false;
 		const scope = looseScope(path);
 		if (scope === null) return false;
@@ -325,8 +336,11 @@ export function createGitFs(
 			.sort();
 	}
 
-	function registerGitdir(gitdir: string): void {
-		registeredGitdirs.set(normalizePath(gitdir), true);
+	function registerGitdir(gitdir: string, facts?: GitdirFacts): void {
+		registeredGitdirs.set(
+			normalizePath(gitdir),
+			new Set(facts?.absentFiles ?? []),
+		);
 	}
 
 	function invalidate(pathPrefix: string): void {
