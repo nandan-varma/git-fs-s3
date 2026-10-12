@@ -64,14 +64,6 @@ export interface GitFsOptions {
 	 * e.g. `refs/heads/packed-refs` is a legal branch ref.
 	 */
 	isStructurallyAbsent?: (path: string) => boolean;
-	/**
-	 * Paths known to be directories; `stat` answers "dir" for them with zero
-	 * store calls. isomorphic-git stats the gitdir on every command
-	 * (`discoverGitdir`), which otherwise costs a HEAD that always misses
-	 * plus a listing — a natural fit when the gitdir layout is fixed and
-	 * repository existence is checked elsewhere.
-	 */
-	isKnownDirectory?: (path: string) => boolean;
 	/** Time-to-live for loose-object hints in milliseconds. Default 3 600 000. */
 	hintTtlMs?: number;
 	/** Diagnostic sink for notable fs events (hint detection results). */

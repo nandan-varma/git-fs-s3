@@ -1,5 +1,6 @@
 import { LRUCache } from "lru-cache";
 import { enoent, enotdir, enotempty, eperm } from "./errors.js";
+import { parsePackDirectory, READABLE_PACK_FILE_KINDS } from "./pack-files.js";
 import { normalizePath, toKey as toKeyWithPrefix } from "./path.js";
 import type {
 	Encoding,
@@ -85,6 +86,14 @@ export interface GitFs extends GitFsClient {
 	 * backing store was modified by something other than this fs.
 	 */
 	invalidate(pathPrefix: string): void;
+	/**
+	 * Declare that `gitdir` exists, so `stat` answers "directory" for it with
+	 * zero store calls. isomorphic-git stats the gitdir on every command
+	 * (`discoverGitdir`); in object storage that is a HEAD that always misses
+	 * plus a listing. Register once the caller has confirmed the repository
+	 * exists by other means (e.g. its database row); `invalidate` forgets it.
+	 */
+	registerGitdir(gitdir: string): void;
 }
 
 /**
@@ -105,7 +114,6 @@ export function createGitFs(
 ): GitFs {
 	const prefix = options.prefix ?? "";
 	const structurallyAbsent = options.isStructurallyAbsent;
-	const knownDirectory = options.isKnownDirectory;
 	const useLooseHints = options.looseObjectHints ?? false;
 	const onNote = options.onNote;
 
@@ -121,6 +129,9 @@ export function createGitFs(
 		max: 1024,
 		ttl: options.hintTtlMs ?? 3_600_000,
 	});
+
+	/** Gitdirs the caller vouched for via {@link GitFs.registerGitdir}. */
+	const registeredGitdirs = new LRUCache<string, true>({ max: 4096 });
 
 	/** The gitdir scope of a loose-object path, or null when it isn't one. */
 	function looseScope(path: string): string | null {
@@ -166,7 +177,7 @@ export function createGitFs(
 		const path = normalizePath(filepath);
 		if (await knownAbsent(path)) throw enoent(syscall, filepath);
 		const k = toKey(path);
-		if (k === prefix || k === "" || knownDirectory?.(path)) {
+		if (k === prefix || k === "" || registeredGitdirs.has(path)) {
 			return makeStat("dir", 0);
 		}
 		const fileStat = await store.head(k);
@@ -285,11 +296,13 @@ export function createGitFs(
 	): Promise<void> {
 		const maxPacks = prefetchOptions?.maxPacks ?? 30;
 		const packDir = `${normalizePath(gitdir)}/objects/pack`;
-		// Only .pack/.idx: isomorphic-git never reads .bitmap/.rev/.keep, so
-		// fetching them is a wasted GET and wasted cache space.
-		const entries = (await promises.readdir(packDir).catch(() => [])).filter(
-			(name) => name.endsWith(".pack") || name.endsWith(".idx"),
-		);
+		// isomorphic-git never reads .bitmap/.rev/.keep, so fetching them is a
+		// wasted GET and wasted cache space.
+		const entries = parsePackDirectory(
+			await promises.readdir(packDir).catch(() => []),
+		)
+			.filter((file) => READABLE_PACK_FILE_KINDS.has(file.kind))
+			.map((file) => file.name);
 		if (entries.length > maxPacks * 2) {
 			await detectLooseObjects(gitdir);
 			return;
@@ -312,8 +325,15 @@ export function createGitFs(
 			.sort();
 	}
 
+	function registerGitdir(gitdir: string): void {
+		registeredGitdirs.set(normalizePath(gitdir), true);
+	}
+
 	function invalidate(pathPrefix: string): void {
 		const normalized = normalizePath(pathPrefix);
+		for (const dir of registeredGitdirs.keys()) {
+			if (dir.startsWith(normalized)) registeredGitdirs.delete(dir);
+		}
 		for (const scope of looseHints.keys()) {
 			if (scope.startsWith(normalized)) looseHints.delete(scope);
 		}
@@ -329,5 +349,6 @@ export function createGitFs(
 		detectLooseObjects,
 		prefetchPacks,
 		invalidate,
+		registerGitdir,
 	};
 }

@@ -7,8 +7,20 @@
  */
 
 import git from "isomorphic-git";
-import { concat, deflate, encodeUtf8, fromHex, sha1 } from "../edge-utils.js";
+import {
+	concat,
+	deflate,
+	encodeUtf8,
+	fromHex,
+	sha1,
+	toHex,
+} from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
+import {
+	type PackFileName,
+	packFileName,
+	parsePackDirectory,
+} from "../pack-files.js";
 import { collectReachableOids } from "./reachability.js";
 import { type HttpHooks, rawFs } from "./types.js";
 
@@ -150,69 +162,92 @@ async function buildVerifiedPack(
  */
 export const REPACK_PACK_COUNT_THRESHOLD = 4;
 
-/**
- * Oids listed in a version-2 pack index: 8-byte header, 256-entry fanout
- * whose last slot is the object count, then the sorted 20-byte names.
- */
-function readIdxOids(idx: Uint8Array): Set<string> | null {
+/** Pack index (`.idx`) version 2 layout — gitformat-pack(5). */
+const IDX_V2 = {
+	magic: 0xff744f63,
+	version: 2,
+	headerBytes: 8,
+	fanoutEntries: 256,
+	oidBytes: 20,
+} as const;
+
+/** Every oid a version-2 pack index lists, or `null` for any other format. */
+function readPackIndexOids(idx: Uint8Array): Set<string> | null {
 	const view = new DataView(idx.buffer, idx.byteOffset, idx.byteLength);
-	if (idx.byteLength < 8 + 1024 || view.getUint32(0) !== 0xff744f63) {
+	const namesStart = IDX_V2.headerBytes + IDX_V2.fanoutEntries * 4;
+	if (
+		idx.byteLength < namesStart ||
+		view.getUint32(0) !== IDX_V2.magic ||
+		view.getUint32(4) !== IDX_V2.version
+	) {
 		return null;
 	}
-	if (view.getUint32(4) !== 2) return null;
-	const count = view.getUint32(8 + 255 * 4);
-	const start = 8 + 1024;
-	if (idx.byteLength < start + count * 20) return null;
+	// The last fanout slot counts every object in the pack.
+	const count = view.getUint32(namesStart - 4);
+	if (idx.byteLength < namesStart + count * IDX_V2.oidBytes) return null;
 	const oids = new Set<string>();
 	for (let i = 0; i < count; i++) {
-		let hex = "";
-		for (let j = 0; j < 20; j++) {
-			hex += (idx[start + i * 20 + j] as number).toString(16).padStart(2, "0");
-		}
-		oids.add(hex);
+		const at = namesStart + i * IDX_V2.oidBytes;
+		oids.add(toHex(idx.subarray(at, at + IDX_V2.oidBytes)));
 	}
 	return oids;
 }
 
 /**
- * Pick a pack to keep as-is: one at least twice the size of every other pack
- * combined. Rewriting it gains nothing (it's already one pack) and loses its
- * delta compression, since packs built here are never deltified — a
- * git-pushed history can grow several-fold that way. Only the small packs
- * around it get consolidated.
+ * Geometric repacking factor, as in `git repack --geometric=2`: a pack at
+ * least this many times the size of all other packs combined is left as-is
+ * and only the packs around it are rolled up.
+ */
+const GEOMETRIC_FACTOR = 2;
+
+interface BasePack {
+	base: string;
+	oids: Set<string>;
+}
+
+/**
+ * The pack to keep untouched under {@link GEOMETRIC_FACTOR}, if any.
+ * Rewriting a dominant pack gains nothing (it's already one pack) and loses
+ * its delta compression, since packs built here are never deltified — a
+ * git-pushed history can grow several-fold that way.
  */
 async function findBasePack(
 	repo: Repo,
-	packFiles: string[],
-): Promise<{ name: string; oids: Set<string> } | null> {
+	packs: readonly PackFileName[],
+): Promise<BasePack | null> {
 	const fsp = rawFs(repo);
 	const packDir = `${repo.gitdir}/objects/pack`;
-	const sizes = await Promise.all(
-		packFiles.map(async (f) => {
-			const stat = (await fsp.stat(`${packDir}/${f}`)) as { size: number };
-			return { name: f, size: stat.size };
+	const sized = await Promise.all(
+		packs.map(async (pack) => {
+			const stat = (await fsp.stat(`${packDir}/${pack.name}`)) as {
+				size: number;
+			};
+			return { pack, size: stat.size };
 		}),
 	);
-	sizes.sort((a, b) => b.size - a.size);
-	const [largest, ...rest] = sizes;
+	sized.sort((a, b) => b.size - a.size);
+	const [largest, ...rest] = sized;
 	if (!largest) return null;
-	const restTotal = rest.reduce((sum, p) => sum + p.size, 0);
-	if (largest.size < 2 * restTotal) return null;
+	const restTotal = rest.reduce((sum, { size }) => sum + size, 0);
+	if (largest.size < GEOMETRIC_FACTOR * restTotal) return null;
 	const idx = await fsp.readFile(
-		`${packDir}/${largest.name.replace(/\.pack$/, ".idx")}`,
+		`${packDir}/${packFileName(largest.pack.base, "idx")}`,
 	);
 	if (typeof idx === "string") return null;
-	const oids = readIdxOids(idx);
-	return oids ? { name: largest.name.replace(/\.pack$/, ""), oids } : null;
+	const oids = readPackIndexOids(idx);
+	return oids ? { base: largest.pack.base, oids } : null;
+}
+
+async function readPackDirectory(repo: Repo): Promise<PackFileName[]> {
+	const entries = await rawFs(repo)
+		.readdir(`${repo.gitdir}/objects/pack`)
+		.catch(() => [] as string[]);
+	return parsePackDirectory(entries);
 }
 
 async function countPacks(repo: Repo): Promise<number> {
-	try {
-		const entries = await rawFs(repo).readdir(`${repo.gitdir}/objects/pack`);
-		return entries.filter((f) => f.endsWith(".pack")).length;
-	} catch {
-		return 0;
-	}
+	const files = await readPackDirectory(repo);
+	return files.filter((file) => file.kind === "pack").length;
 }
 
 export interface RepackOptions {
@@ -262,36 +297,37 @@ export async function repackRepository(
 		if (!complete || reachable.length === 0) return [];
 
 		const packDir = `${repo.gitdir}/objects/pack`;
-		const packFiles = (await fsp.readdir(packDir).catch(() => [])).filter((f) =>
-			f.endsWith(".pack"),
+		const before = await readPackDirectory(repo);
+		const base = await findBasePack(
+			repo,
+			before.filter((file) => file.kind === "pack"),
 		);
-		const base = await findBasePack(repo, packFiles);
 		const oids = base
 			? reachable.filter((oid) => !base.oids.has(oid))
 			: reachable;
-		// Is this file part of the pack being kept?
-		const isBaseFile = (f: string) =>
-			base !== null && f.startsWith(`${base.name}.`);
-
-		if (oids.length === 0) {
-			// Everything reachable is already in the base pack: the other
-			// packs are pure redundancy.
-			const redundant = (await fsp.readdir(packDir)).filter(
-				(f) => !isBaseFile(f) && /\.(pack|idx|keep|bitmap|rev)$/.test(f),
+		const removeAllExcept = async (keep: ReadonlySet<string>) => {
+			const stale = (await readPackDirectory(repo)).filter(
+				(file) => !keep.has(file.base),
 			);
 			await Promise.all(
-				redundant.map((f) => fsp.unlink(`${packDir}/${f}`).catch(() => {})),
+				stale.map((file) =>
+					fsp.unlink(`${packDir}/${file.name}`).catch(() => {}),
+				),
 			);
-			return redundant.map((f) => `objects/pack/${f}`);
-		}
+			return stale.map((file) => `objects/pack/${file.name}`);
+		};
+		const kept = new Set(base ? [base.base] : []);
+
+		// Everything reachable is already in the base pack: the other packs
+		// are pure redundancy.
+		if (oids.length === 0) return removeAllExcept(kept);
 
 		const objects = await readAndVerifyObjects(repo, oids);
 		const packBuffer = await buildVerifiedPack(oids, objects);
 
 		await fsp.mkdir(packDir, { recursive: true });
 		const newBase = `pack-${Date.now()}`;
-		const newPackFile = `${newBase}.pack`;
-		const newIdxFile = `${newBase}.idx`;
+		const newPackFile = packFileName(newBase, "pack");
 		await fsp.writeFile(`${packDir}/${newPackFile}`, packBuffer);
 
 		const { oids: indexedOids } = await git.indexPack({
@@ -306,32 +342,20 @@ export async function repackRepository(
 			indexed.size !== expected.size ||
 			oids.some((oid) => !indexed.has(oid))
 		) {
-			await fsp.unlink(`${packDir}/${newPackFile}`).catch(() => {});
-			await fsp.unlink(`${packDir}/${newIdxFile}`).catch(() => {});
+			await Promise.all(
+				(["pack", "idx"] as const).map((kind) =>
+					fsp
+						.unlink(`${packDir}/${packFileName(newBase, kind)}`)
+						.catch(() => {}),
+				),
+			);
 			throw new Error(
 				"repack: indexed pack's oid set didn't match the verified reachable set — aborting",
 			);
 		}
 
-		const allEntries: string[] = await fsp.readdir(packDir).catch(() => []);
-
-		const staleFiles = allEntries.filter(
-			(f) =>
-				f !== newPackFile &&
-				f !== newIdxFile &&
-				!isBaseFile(f) &&
-				(f.endsWith(".pack") ||
-					f.endsWith(".idx") ||
-					f.endsWith(".keep") ||
-					f.endsWith(".bitmap") ||
-					f.endsWith(".rev")),
-		);
-
-		await Promise.all(
-			staleFiles.map((f) => fsp.unlink(`${packDir}/${f}`).catch(() => {})),
-		);
-
-		return staleFiles.map((f) => `objects/pack/${f}`);
+		kept.add(newBase);
+		return removeAllExcept(kept);
 	} catch (err) {
 		hooks?.onWarn?.("repack failed (non-fatal)", err);
 		return [];

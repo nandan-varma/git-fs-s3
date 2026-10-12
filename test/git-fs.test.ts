@@ -161,17 +161,20 @@ describe("git-aware optimizations", () => {
 		return { store, gitFs, fs: gitFs.promises };
 	}
 
-	it("isKnownDirectory answers stat with zero store calls", async () => {
+	it("registerGitdir answers stat with zero store calls until invalidated", async () => {
 		const store = new MemoryObjectStore();
-		const fs = createGitFs(store, {
-			isKnownDirectory: (p) => p === gitdir,
-		}).promises;
+		const gitFs = createGitFs(store);
+		gitFs.registerGitdir(gitdir);
 		const headSpy = vi.spyOn(store, "head");
 		const listSpy = vi.spyOn(store, "list");
-		const stat = await fs.stat(gitdir);
-		expect(stat.isDirectory()).toBe(true);
+		expect((await gitFs.promises.stat(gitdir)).isDirectory()).toBe(true);
 		expect(headSpy).not.toHaveBeenCalled();
 		expect(listSpy).not.toHaveBeenCalled();
+
+		gitFs.invalidate(gitdir);
+		await expect(gitFs.promises.stat(gitdir)).rejects.toMatchObject({
+			code: "ENOENT",
+		});
 	});
 
 	it("structural absence short-circuits readFile and stat with zero store calls", async () => {

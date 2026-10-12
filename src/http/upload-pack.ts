@@ -1,6 +1,7 @@
 import git from "isomorphic-git";
 import { concat } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
+import { parsePackDirectory } from "../pack-files.js";
 import { parsePktLines, pktLine, sideBandPackfile } from "./pkt-line.js";
 import { collectReachableOids } from "./reachability.js";
 import { type GitHttpResult, type HttpHooks, rawFs, runStep } from "./types.js";
@@ -78,7 +79,9 @@ export async function handleUploadPack(
 				.readdir(packDirPath)
 				.catch(() => [] as string[]),
 		);
-		const packNames = entries.filter((f) => f.endsWith(".pack"));
+		const packNames = parsePackDirectory(entries)
+			.filter((file) => file.kind === "pack")
+			.map((file) => file.name);
 		const packName = packNames[0];
 		if (packNames.length === 1 && packName !== undefined) {
 			const packData = await runStep(
