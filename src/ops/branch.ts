@@ -68,8 +68,19 @@ function decodeFileContent(content: string | Uint8Array): string {
  * supported there.
  */
 async function listLooseBranches(repo: Repo): Promise<string[] | null> {
+	return listLooseRefNames(repo, "refs/heads");
+}
+
+/**
+ * Loose ref names under `dir` (e.g. `refs/tags`) in one recursive listing,
+ * or `null` when the fs can't list recursively (use isomorphic-git's walk).
+ */
+export async function listLooseRefNames(
+	repo: Repo,
+	dir: "refs/heads" | "refs/tags",
+): Promise<string[] | null> {
 	if (!hasRecursiveFileLister(repo.fs)) return null;
-	const names = await repo.fs.listFilesRecursively(`${repo.gitdir}/refs/heads`);
+	const names = await repo.fs.listFilesRecursively(`${repo.gitdir}/${dir}`);
 	return names.filter(isSafeBranchName);
 }
 
