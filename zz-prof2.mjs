@@ -1,0 +1,24 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { deflateSync } from "node:zlib";
+import git from "isomorphic-git";
+import { createGitFs, MemoryObjectStore, createCachedStore } from "./dist/index.js";
+import { collectReachableOids } from "./dist/http.js";
+const root = process.argv[2];
+const store = new MemoryObjectStore();
+function walk(d) { for (const f of readdirSync(d)) { const p = join(d, f); if (statSync(p).isDirectory()) walk(p); else store.put("g/" + p.slice(root.length + 1), readFileSync(p)); } }
+walk(root);
+const repo = { fs: createGitFs(createCachedStore(store, { maxBytes: 1e9, copy: false })), gitdir: "g", cache: {} };
+const head = await git.resolveRef({ ...repo, ref: "refs/heads/main" });
+const { oids } = await collectReachableOids(repo, [head], undefined, undefined, { verifyBlobs: false });
+let t = performance.now(); await git.packObjects({ ...repo, oids }); console.log("iso packObjects", Math.round(performance.now() - t), "ms");
+t = performance.now(); let total = 0;
+const objs = [];
+for (const oid of oids) objs.push(await git.readObject({ ...repo, oid, format: "content" }));
+console.log("read content", Math.round(performance.now() - t), "ms");
+t = performance.now();
+for (const o of objs) total += (await new Response(new Blob([o.object]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer()).byteLength;
+console.log("CompressionStream deflate", Math.round(performance.now() - t), "ms", total);
+t = performance.now(); total = 0;
+for (const o of objs) total += deflateSync(o.object).byteLength;
+console.log("zlib deflateSync", Math.round(performance.now() - t), "ms", total);

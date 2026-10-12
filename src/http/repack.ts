@@ -7,20 +7,14 @@
  */
 
 import git from "isomorphic-git";
-import {
-	concat,
-	deflate,
-	encodeUtf8,
-	fromHex,
-	sha1,
-	toHex,
-} from "../edge-utils.js";
+import { concat, deflate, encodeUtf8, fromHex, sha1 } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
 import {
 	type PackFileName,
 	packFileName,
 	parsePackDirectory,
 } from "../pack-files.js";
+import { readPackIndex } from "./pack-reuse.js";
 import { collectReachableOids } from "./reachability.js";
 import { type HttpHooks, rawFs } from "./types.js";
 
@@ -162,37 +156,6 @@ async function buildVerifiedPack(
  */
 export const REPACK_PACK_COUNT_THRESHOLD = 4;
 
-/** Pack index (`.idx`) version 2 layout — gitformat-pack(5). */
-const IDX_V2 = {
-	magic: 0xff744f63,
-	version: 2,
-	headerBytes: 8,
-	fanoutEntries: 256,
-	oidBytes: 20,
-} as const;
-
-/** Every oid a version-2 pack index lists, or `null` for any other format. */
-function readPackIndexOids(idx: Uint8Array): Set<string> | null {
-	const view = new DataView(idx.buffer, idx.byteOffset, idx.byteLength);
-	const namesStart = IDX_V2.headerBytes + IDX_V2.fanoutEntries * 4;
-	if (
-		idx.byteLength < namesStart ||
-		view.getUint32(0) !== IDX_V2.magic ||
-		view.getUint32(4) !== IDX_V2.version
-	) {
-		return null;
-	}
-	// The last fanout slot counts every object in the pack.
-	const count = view.getUint32(namesStart - 4);
-	if (idx.byteLength < namesStart + count * IDX_V2.oidBytes) return null;
-	const oids = new Set<string>();
-	for (let i = 0; i < count; i++) {
-		const at = namesStart + i * IDX_V2.oidBytes;
-		oids.add(toHex(idx.subarray(at, at + IDX_V2.oidBytes)));
-	}
-	return oids;
-}
-
 /**
  * Geometric repacking factor, as in `git repack --geometric=2`: a pack at
  * least this many times the size of all other packs combined is left as-is
@@ -234,8 +197,10 @@ async function findBasePack(
 		`${packDir}/${packFileName(largest.pack.base, "idx")}`,
 	);
 	if (typeof idx === "string") return null;
-	const oids = readPackIndexOids(idx);
-	return oids ? { base: largest.pack.base, oids } : null;
+	const entries = readPackIndex(idx);
+	return entries
+		? { base: largest.pack.base, oids: new Set(entries.map((e) => e.oid)) }
+		: null;
 }
 
 async function readPackDirectory(repo: Repo): Promise<PackFileName[]> {

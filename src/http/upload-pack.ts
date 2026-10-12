@@ -2,6 +2,7 @@ import git from "isomorphic-git";
 import { concat } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
 import { parsePackDirectory } from "../pack-files.js";
+import { buildPackFromExistingPacks } from "./pack-reuse.js";
 import { parsePktLines, pktLine, sideBandPackfile } from "./pkt-line.js";
 import { collectReachableOids } from "./reachability.js";
 import { type GitHttpResult, type HttpHooks, rawFs, runStep } from "./types.js";
@@ -134,14 +135,21 @@ export async function handleUploadPack(
 	// Boundary oids are recorded as seen by the walk; drop them from the pack.
 	const oids = haveSet ? wantOids.filter((oid) => !haveSet.has(oid)) : wantOids;
 
-	const { packfile } = await runStep(
+	// Copy stored (already compressed, possibly deltified) entries when every
+	// object is packed; build from scratch only when some aren't.
+	const reused = await runStep(
 		hooks,
-		`packObjects (${oids.length} oids)`,
-		() => git.packObjects({ ...repo, oids }),
+		`reuse pack entries (${oids.length} oids)`,
+		() => buildPackFromExistingPacks(repo, oids),
 	);
-
 	const packBytes =
-		packfile instanceof Uint8Array ? packfile : new Uint8Array(packfile ?? []);
+		reused ??
+		(await runStep(hooks, `packObjects (${oids.length} oids)`, async () => {
+			const { packfile } = await git.packObjects({ ...repo, oids });
+			return packfile instanceof Uint8Array
+				? packfile
+				: new Uint8Array(packfile ?? []);
+		}));
 
 	return {
 		status: 200,
