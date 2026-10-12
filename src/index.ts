@@ -34,6 +34,21 @@ export {
 } from "./git-errors.js";
 export { createGitFs, type GitFs } from "./git-fs.js";
 export {
+	classifyGitdirPath,
+	type GitdirEntry,
+	isMutableGitdirEntry,
+	parseLooseObjectPath,
+} from "./git-layout.js";
+export {
+	PACK_FILE_KINDS,
+	type PackFileKind,
+	type PackFileName,
+	packFileName,
+	parsePackDirectory,
+	parsePackFileName,
+	READABLE_PACK_FILE_KINDS,
+} from "./pack-files.js";
+export {
 	isFullSha,
 	isSafeBranchName,
 	isSafeFullRefName,

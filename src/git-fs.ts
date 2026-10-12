@@ -1,5 +1,6 @@
 import { LRUCache } from "lru-cache";
 import { enoent, enotdir, enotempty, eperm } from "./errors.js";
+import { parseLooseObjectPath } from "./git-layout.js";
 import { parsePackDirectory, READABLE_PACK_FILE_KINDS } from "./pack-files.js";
 import { normalizePath, toKey as toKeyWithPrefix } from "./path.js";
 import type {
@@ -15,12 +16,6 @@ import type {
 
 const FILE_MODE = 0o100644;
 const DIR_MODE = 0o40000;
-
-/**
- * A loose git object path: `objects/xx/<38 hex>` under any gitdir. The two
- * capture groups let the gitdir scope be recovered from a full path.
- */
-const LOOSE_OBJECT_RE = /(^|\/)objects\/[0-9a-f]{2}\/[0-9a-f]{38}$/;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -146,9 +141,7 @@ export function createGitFs(
 
 	/** The gitdir scope of a loose-object path, or null when it isn't one. */
 	function looseScope(path: string): string | null {
-		const match = LOOSE_OBJECT_RE.exec(path);
-		if (match === null) return null;
-		return path.slice(0, match.index);
+		return parseLooseObjectPath(path)?.gitdir ?? null;
 	}
 
 	const pendingDetections = new Map<string, Promise<void>>();
@@ -293,7 +286,9 @@ export function createGitFs(
 			// and "pack/", so when any loose object exists it is the first key.
 			const first = objects[0]?.key;
 			const hint =
-				first !== undefined && LOOSE_OBJECT_RE.test(first) ? "present" : "none";
+				first !== undefined && parseLooseObjectPath(first) !== null
+					? "present"
+					: "none";
 			looseHints.set(scope, hint);
 			onNote?.(`loose objects ${hint} under ${scope}`);
 		} catch {
