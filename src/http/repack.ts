@@ -1,5 +1,6 @@
 /**
- * Pack consolidation: merge all packs into one verified, non-deltified pack.
+ * Pack consolidation: merge packs into one verified, non-deltified pack,
+ * leaving a dominant (already-compact) base pack untouched when there is one.
  *
  * Edge-compatible: uses Web Crypto (SHA-1), CompressionStream (deflate),
  * and Uint8Array throughout — no node:crypto, node:zlib, or Buffer.
@@ -149,6 +150,62 @@ async function buildVerifiedPack(
  */
 export const REPACK_PACK_COUNT_THRESHOLD = 4;
 
+/**
+ * Oids listed in a version-2 pack index: 8-byte header, 256-entry fanout
+ * whose last slot is the object count, then the sorted 20-byte names.
+ */
+function readIdxOids(idx: Uint8Array): Set<string> | null {
+	const view = new DataView(idx.buffer, idx.byteOffset, idx.byteLength);
+	if (idx.byteLength < 8 + 1024 || view.getUint32(0) !== 0xff744f63) {
+		return null;
+	}
+	if (view.getUint32(4) !== 2) return null;
+	const count = view.getUint32(8 + 255 * 4);
+	const start = 8 + 1024;
+	if (idx.byteLength < start + count * 20) return null;
+	const oids = new Set<string>();
+	for (let i = 0; i < count; i++) {
+		let hex = "";
+		for (let j = 0; j < 20; j++) {
+			hex += (idx[start + i * 20 + j] as number).toString(16).padStart(2, "0");
+		}
+		oids.add(hex);
+	}
+	return oids;
+}
+
+/**
+ * Pick a pack to keep as-is: one at least twice the size of every other pack
+ * combined. Rewriting it gains nothing (it's already one pack) and loses its
+ * delta compression, since packs built here are never deltified — a
+ * git-pushed history can grow several-fold that way. Only the small packs
+ * around it get consolidated.
+ */
+async function findBasePack(
+	repo: Repo,
+	packFiles: string[],
+): Promise<{ name: string; oids: Set<string> } | null> {
+	const fsp = rawFs(repo);
+	const packDir = `${repo.gitdir}/objects/pack`;
+	const sizes = await Promise.all(
+		packFiles.map(async (f) => {
+			const stat = (await fsp.stat(`${packDir}/${f}`)) as { size: number };
+			return { name: f, size: stat.size };
+		}),
+	);
+	sizes.sort((a, b) => b.size - a.size);
+	const [largest, ...rest] = sizes;
+	if (!largest) return null;
+	const restTotal = rest.reduce((sum, p) => sum + p.size, 0);
+	if (largest.size < 2 * restTotal) return null;
+	const idx = await fsp.readFile(
+		`${packDir}/${largest.name.replace(/\.pack$/, ".idx")}`,
+	);
+	if (typeof idx === "string") return null;
+	const oids = readIdxOids(idx);
+	return oids ? { name: largest.name.replace(/\.pack$/, ""), oids } : null;
+}
+
 async function countPacks(repo: Repo): Promise<number> {
 	try {
 		const entries = await rawFs(repo).readdir(`${repo.gitdir}/objects/pack`);
@@ -197,13 +254,40 @@ export async function repackRepository(
 		).filter((oid): oid is string => oid !== null);
 		if (tipOids.length === 0) return [];
 
-		const { oids, complete } = await collectReachableOids(repo, tipOids, hooks);
-		if (!complete || oids.length === 0) return [];
+		const { oids: reachable, complete } = await collectReachableOids(
+			repo,
+			tipOids,
+			hooks,
+		);
+		if (!complete || reachable.length === 0) return [];
+
+		const packDir = `${repo.gitdir}/objects/pack`;
+		const packFiles = (await fsp.readdir(packDir).catch(() => [])).filter((f) =>
+			f.endsWith(".pack"),
+		);
+		const base = await findBasePack(repo, packFiles);
+		const oids = base
+			? reachable.filter((oid) => !base.oids.has(oid))
+			: reachable;
+		// Is this file part of the pack being kept?
+		const isBaseFile = (f: string) =>
+			base !== null && f.startsWith(`${base.name}.`);
+
+		if (oids.length === 0) {
+			// Everything reachable is already in the base pack: the other
+			// packs are pure redundancy.
+			const redundant = (await fsp.readdir(packDir)).filter(
+				(f) => !isBaseFile(f) && /\.(pack|idx|keep|bitmap|rev)$/.test(f),
+			);
+			await Promise.all(
+				redundant.map((f) => fsp.unlink(`${packDir}/${f}`).catch(() => {})),
+			);
+			return redundant.map((f) => `objects/pack/${f}`);
+		}
 
 		const objects = await readAndVerifyObjects(repo, oids);
 		const packBuffer = await buildVerifiedPack(oids, objects);
 
-		const packDir = `${repo.gitdir}/objects/pack`;
 		await fsp.mkdir(packDir, { recursive: true });
 		const newBase = `pack-${Date.now()}`;
 		const newPackFile = `${newBase}.pack`;
@@ -235,7 +319,12 @@ export async function repackRepository(
 			(f) =>
 				f !== newPackFile &&
 				f !== newIdxFile &&
-				(f.endsWith(".pack") || f.endsWith(".idx") || f.endsWith(".keep")),
+				!isBaseFile(f) &&
+				(f.endsWith(".pack") ||
+					f.endsWith(".idx") ||
+					f.endsWith(".keep") ||
+					f.endsWith(".bitmap") ||
+					f.endsWith(".rev")),
 		);
 
 		await Promise.all(

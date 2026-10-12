@@ -142,4 +142,108 @@ describe("repackRepository", () => {
 		const stalePaths = await repackRepository(repo, { threshold: 4 });
 		expect(stalePaths).toEqual([]);
 	});
+
+	it("keeps a dominant base pack and consolidates only the small packs around it", async () => {
+		const { repo, store } = makeRepo();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+		const fsp = rawFs(repo);
+		const packDir = `${repo.gitdir}/objects/pack`;
+
+		// Pack whatever is loose into its own pack, then drop the loose copies.
+		async function packLoose(): Promise<string> {
+			const { objects } = await store.list(`${repo.gitdir}/objects/`);
+			const oids = objects
+				.map(({ key }) => /objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/.exec(key))
+				.filter((m): m is RegExpExecArray => m !== null)
+				.map((m) => `${m[1]}${m[2]}`);
+			const { filename } = await git.packObjects({
+				...repo,
+				oids,
+				write: true,
+			});
+			await git.indexPack({ ...repo, dir: packDir, filepath: filename });
+			await deleteLooseObjects(repo, store);
+			return filename.replace(/\.pack$/, "");
+		}
+
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "big\n",
+			author,
+			files: Array.from({ length: 20 }, (_, i) => ({
+				path: `f${i}.txt`,
+				// Incompressible, so this pack really dominates the small ones.
+				content: Array.from({ length: 500 }, () =>
+					Math.random().toString(36),
+				).join(""),
+			})),
+		});
+		const base = await packLoose();
+		await fsp.writeFile(`${packDir}/${base}.bitmap`, new Uint8Array([1]));
+		const small: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			await commitFilesToBare(repo, {
+				branch: "main",
+				message: `small ${i}\n`,
+				author,
+				files: [{ path: "small.txt", content: `${i}\n` }],
+			});
+			small.push(await packLoose());
+		}
+
+		const stale = await repackRepository(repo, { threshold: 4 });
+
+		expect(new Set(stale)).toEqual(
+			new Set(
+				small.flatMap((n) => [
+					`objects/pack/${n}.pack`,
+					`objects/pack/${n}.idx`,
+				]),
+			),
+		);
+		const remaining = await fsp.readdir(packDir);
+		expect(remaining).toContain(`${base}.pack`);
+		expect(remaining).toContain(`${base}.idx`);
+		expect(remaining.filter((f) => f.endsWith(".pack"))).toHaveLength(2);
+
+		const log = await git.log({ ...repo, ref: "main" });
+		expect(log.map((c) => c.commit.message)).toEqual([
+			"small 2\n",
+			"small 1\n",
+			"small 0\n",
+			"big\n",
+		]);
+		const head = log[0]?.oid as string;
+		const { blob } = await git.readBlob({
+			...repo,
+			oid: head,
+			filepath: "f3.txt",
+		});
+		expect(blob.length).toBeGreaterThan(1000);
+	});
+
+	it("removes .bitmap/.rev files of packs it replaces", async () => {
+		const { repo } = makeRepo();
+		await seed(repo, 2);
+		await addDummyPackFiles(repo, 4);
+		const fsp = rawFs(repo);
+		await fsp.writeFile(
+			`${repo.gitdir}/objects/pack/dummy-0.bitmap`,
+			new Uint8Array([0]),
+		);
+		await fsp.writeFile(
+			`${repo.gitdir}/objects/pack/dummy-0.rev`,
+			new Uint8Array([0]),
+		);
+
+		const stale = await repackRepository(repo, { threshold: 4 });
+
+		expect(stale).toContain("objects/pack/dummy-0.bitmap");
+		expect(stale).toContain("objects/pack/dummy-0.rev");
+	});
 });
