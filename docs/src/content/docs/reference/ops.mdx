@@ -128,7 +128,7 @@ pattern.
 | `CommitInfo` | `{ oid, commit: { message, tree, parent, author, committer }, payload }` |
 | `CommitLogOptions` | `{ ref?, depth?, knownHeadSha? }` |
 | `TreeEntry` | `{ path, mode, type: "blob" \| "tree", oid, size? }` |
-| `DiffFile` | `{ path, status, additions, deletions, patch, isBinary?, oldContent?, newContent?, ... }` |
+| `DiffFile` | `{ path, status, kind: "text" \| "binary" \| "too-large", additions, deletions, patch, oldPath?, oldSize?, newSize? }` |
 | `DiffResult` | `{ files: DiffFile[]; totalAdditions; totalDeletions; totalFiles }` |
 | `FileHistoryEntry` | `{ sha, message, authorName, authorEmail, createdAt }` |
 | `FileHistoryResult` | `{ entries: FileHistoryEntry[]; truncated: boolean }` |

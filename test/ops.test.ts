@@ -26,6 +26,7 @@ import {
 	getLastCommitsForTree,
 	getTreeFromRef,
 	listBranches,
+	MAX_DIFF_TEXT_BYTES,
 	type Repo,
 	type ResultCache,
 	resolveLooseRefFast,
@@ -401,6 +402,35 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(entries.map((e) => e.path)).toEqual(["src"]);
 	});
 
+	it("gives binary and oversized files a kind, sizes and no patch or content", async () => {
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "binary and big\n",
+			author,
+			files: [
+				{ path: "logo.png", content: new Uint8Array([137, 80, 0, 1, 2]) },
+				{ path: "big.txt", content: "x".repeat(MAX_DIFF_TEXT_BYTES + 1) },
+			],
+		});
+		const [tip] = await getCommitLog(repo, { ref: "main", depth: 1 });
+		const diff = await getCommitDiff(repo, tip?.oid as string);
+		const byPath = new Map(diff.files.map((f) => [f.path, f]));
+
+		expect(byPath.get("logo.png")).toMatchObject({
+			kind: "binary",
+			patch: "",
+			newSize: 5,
+		});
+		expect(byPath.get("big.txt")).toMatchObject({
+			kind: "too-large",
+			patch: "",
+			newSize: MAX_DIFF_TEXT_BYTES + 1,
+		});
+		for (const file of diff.files) {
+			expect(Object.keys(file)).not.toContain("newContent");
+		}
+	});
+
 	it("diffs commits and refs", async () => {
 		const log = await getCommitLog(repo, { ref: "main", depth: 2 });
 		const tipSha = log[0]?.oid as string;
@@ -410,6 +440,7 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(diff.files[0]).toMatchObject({
 			path: "src/index.ts",
 			status: "modified",
+			kind: "text",
 			additions: 1,
 			deletions: 1,
 		});

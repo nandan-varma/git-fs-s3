@@ -19,6 +19,7 @@ export {
 	type DiffResult,
 	getCommitDiff,
 	getDiffBetweenRefs,
+	MAX_DIFF_TEXT_BYTES,
 } from "./diff.js";
 export {
 	BANNER_WALK_DEPTH,

@@ -1,21 +1,29 @@
 import { createTwoFilesPatch } from "diff";
 import git from "isomorphic-git";
-import { readBlobContent, toBase64 } from "../edge-utils.js";
+import { readBlobContent } from "../edge-utils.js";
 import { qualifyBranchRef } from "../refs.js";
 import { getCommit } from "./history.js";
 import type { Repo } from "./types.js";
 
+/** Text files larger than this get no patch (kind "too-large"). */
+export const MAX_DIFF_TEXT_BYTES = 1024 * 1024;
+
 export interface DiffFile {
 	path: string;
 	status: "added" | "modified" | "deleted" | "renamed";
+	/**
+	 * "text" has a unified `patch`; "binary" (a NUL byte on either side) and
+	 * "too-large" (text over MAX_DIFF_TEXT_BYTES) don't — fetch the sides by
+	 * path at each ref if they need showing.
+	 */
+	kind: "text" | "binary" | "too-large";
 	additions: number;
 	deletions: number;
 	patch: string;
 	oldPath?: string;
-	isBinary?: boolean;
-	oldContent?: string;
-	newContent?: string;
+	/** Byte size before the change; absent for an added file. */
 	oldSize?: number;
+	/** Byte size after the change; absent for a deleted file. */
 	newSize?: number;
 }
 
@@ -89,24 +97,29 @@ function buildDiffFile(
 	before: BlobContent | null,
 	after: BlobContent | null,
 ): DiffFile {
-	const isBinary = !!(before?.isBinary || after?.isBinary);
+	const kind: DiffFile["kind"] =
+		before?.isBinary || after?.isBinary
+			? "binary"
+			: Math.max(before?.bytes.length ?? 0, after?.bytes.length ?? 0) >
+					MAX_DIFF_TEXT_BYTES
+				? "too-large"
+				: "text";
+	const isText = kind === "text";
 	return {
 		path,
 		status,
-		additions: !isBinary && after ? countContentLines(after.text) : 0,
-		deletions: !isBinary && before ? countContentLines(before.text) : 0,
-		patch: isBinary
-			? ""
-			: createUnifiedPatch({
+		kind,
+		additions: isText && after ? countContentLines(after.text) : 0,
+		deletions: isText && before ? countContentLines(before.text) : 0,
+		patch: isText
+			? createUnifiedPatch({
 					path,
 					before: before?.text ?? "",
 					after: after?.text ?? "",
 					oldPath: before ? undefined : "/dev/null",
 					newPath: after ? undefined : "/dev/null",
-				}),
-		isBinary,
-		oldContent: before && isBinary ? toBase64(before.bytes) : undefined,
-		newContent: after && isBinary ? toBase64(after.bytes) : undefined,
+				})
+			: "",
 		oldSize: before?.bytes.length,
 		newSize: after?.bytes.length,
 	};

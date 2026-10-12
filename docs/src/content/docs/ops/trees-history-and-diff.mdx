@@ -182,7 +182,9 @@ directory listings on large repos.
 	accepted). `DiffResult` is `{ files: DiffFile[], totalAdditions,
 	totalDeletions, totalFiles }`; each `DiffFile` carries a git-style
 	unified patch (`diff --git a/... b/...` header, no leaking `diff`
-	package internals like an `Index:`/`===` block) plus binary detection
-	(`isBinary`, base64 `oldContent`/`newContent` for binary files instead of
-	a text patch).
+	package internals like an `Index:`/`===` block) when `kind` is `"text"`.
+	Binary files (`kind: "binary"`) and text over `MAX_DIFF_TEXT_BYTES`
+	(`kind: "too-large"`) carry no patch and no content — only
+	`oldSize`/`newSize`; fetch either side by path at its ref if it needs
+	displaying.
 </ApiSignature>
