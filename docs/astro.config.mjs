@@ -9,7 +9,6 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'git-fs-s3',
-			tagline: 'Run git repositories on serverless platforms — no disk, no git binary.',
 			description:
 				'An isomorphic-git filesystem backend for S3-compatible object storage (AWS S3, Cloudflare R2, MinIO). Includes a smart-HTTP protocol handler and a higher-level git-hosting operations layer.',
 			social: [
