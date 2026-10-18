@@ -3,14 +3,24 @@
 Releases of `git-fs-s3`, derived from this repository's release history. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.12.0] - 2026-10-18
 
 ### Changed
 
-- Licence: AGPL-3.0-or-later (was MIT). Versions up to and including
-  `0.11.0` were published under MIT and remain available under it; from the
-  next release onward, a network service built on this package must offer its
-  users the corresponding source (AGPL section 13).
+- Licence: AGPL-3.0-or-later (was MIT). Versions up to and including `0.11.0`
+  were published under MIT and remain available under it; from this release
+  onward, a network service built on this package must offer its users the
+  corresponding source (AGPL section 13).
+
+### Fixed
+
+- `createRetryStore` no longer drops the optional `ObjectStore.getRange`. It
+  returns a new object listing the methods it wraps, so `getRange` used to
+  disappear from any stack built with it — silently, because a missing
+  `getRange` makes `getObjectSize` answer "unknown" instead of throwing, and
+  every caller that gates on a size then read the whole object anyway. The
+  0.11.0 size gate was inert in the recommended stack
+  (`r2 → retry → cache → fs`) for exactly this reason.
 
 ## [0.11.0] - 2026-10-18
 
