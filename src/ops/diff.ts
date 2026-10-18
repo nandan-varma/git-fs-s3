@@ -13,9 +13,13 @@ export interface DiffFile {
 	/**
 	 * "text" has a unified `patch`; "binary" (a NUL byte on either side) and
 	 * "too-large" (text over MAX_DIFF_TEXT_BYTES) don't — fetch the sides by
-	 * path at each ref if they need showing.
+	 * path at each ref if they need showing. "submodule" compares external
+	 * pointers using oldEntry/newEntry, including conversions to files/trees.
 	 */
-	kind: "text" | "binary" | "too-large";
+	kind: "text" | "binary" | "too-large" | "submodule";
+	/** Present on a submodule diff, including file/directory type changes. */
+	oldEntry?: DiffEntry;
+	newEntry?: DiffEntry;
 	additions: number;
 	deletions: number;
 	patch: string;
@@ -25,7 +29,16 @@ export interface DiffFile {
 	newSize?: number;
 }
 
+export interface DiffEntry {
+	type: Awaited<ReturnType<WalkerEntry["type"]>>;
+	oid: string;
+	mode: number;
+}
+
 export interface DiffResult {
+	/** Exact parent/merge-base and head used to compute this diff. */
+	oldRef?: string;
+	newRef: string;
 	files: DiffFile[];
 	totalAdditions: number;
 	totalDeletions: number;
@@ -84,6 +97,50 @@ function buildDiffFile(
 	};
 }
 
+async function readDiffEntry(
+	entry: WalkerEntry | null,
+): Promise<DiffEntry | undefined> {
+	return entry
+		? {
+				type: await entry.type(),
+				oid: await entry.oid(),
+				mode: await entry.mode(),
+			}
+		: undefined;
+}
+
+/** Submodules are pointer diffs even when replacing a regular file or directory. */
+function buildSubmoduleDiff(
+	filepath: string,
+	before: DiffEntry | undefined,
+	after: DiffEntry | undefined,
+): DiffFile | undefined {
+	if (before?.type === after?.type && before?.oid === after?.oid)
+		return undefined;
+	const line = (entry: DiffEntry | undefined) =>
+		entry
+			? `${entry.type === "commit" ? "Subproject commit" : entry.type === "tree" ? "Directory" : "File"} ${entry.oid}\n`
+			: "";
+	return {
+		path: filepath,
+		status: !before ? "added" : !after ? "deleted" : "modified",
+		kind: "submodule",
+		additions: 0,
+		deletions: 0,
+		oldEntry: before,
+		newEntry: after,
+		patch: createTwoFilesPatch(
+			before ? `a/${filepath}` : "/dev/null",
+			after ? `b/${filepath}` : "/dev/null",
+			line(before),
+			line(after),
+			"",
+			"",
+			{ context: 3 },
+		),
+	};
+}
+
 /**
  * Every file that differs between two trees; `oldTreeOid` null diffs against
  * nothing (a root commit: every file is an addition).
@@ -92,7 +149,7 @@ async function diffTrees(
 	repo: Repo,
 	oldTreeOid: string | null,
 	newTreeOid: string,
-): Promise<DiffResult> {
+): Promise<Omit<DiffResult, "oldRef" | "newRef">> {
 	const readSide = async (entry: WalkerEntry | null) => {
 		if (!entry || (await entry.type()) !== "blob") return null;
 		const { blob } = await git.readBlob({ ...repo, oid: await entry.oid() });
@@ -112,7 +169,15 @@ async function diffTrees(
 				oldEntry?.type(),
 				newEntry?.type(),
 			]);
-			// Directories recurse; only blobs become diff entries.
+			// Gitlinks name external commits: compare the pointers, never read them.
+			if (oldType === "commit" || newType === "commit") {
+				const [before, after] = await Promise.all([
+					readDiffEntry(oldEntry),
+					readDiffEntry(newEntry),
+				]);
+				return buildSubmoduleDiff(filepath, before, after);
+			}
+			// Directories recurse; blobs become content diff entries.
 			if (oldType !== "blob" && newType !== "blob") return undefined;
 			if (oldEntry && newEntry && oldType === newType) {
 				const [oldOid, newOid] = await Promise.all([
@@ -149,7 +214,11 @@ export async function getCommitDiff(
 	const parentTree = parent
 		? (await getCommit(repo, parent)).commit.tree
 		: null;
-	return diffTrees(repo, parentTree, commit.tree);
+	return {
+		...(await diffTrees(repo, parentTree, commit.tree)),
+		oldRef: parent,
+		newRef: commitSha,
+	};
 }
 
 /**
@@ -177,5 +246,9 @@ export async function getDiffBetweenRefs(
 			: mergeBase === base.oid
 				? base.commit.tree
 				: (await getCommit(repo, mergeBase)).commit.tree;
-	return diffTrees(repo, baseTree, compare.commit.tree);
+	return {
+		...(await diffTrees(repo, baseTree, compare.commit.tree)),
+		oldRef: mergeBase,
+		newRef: compare.oid,
+	};
 }

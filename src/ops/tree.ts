@@ -5,7 +5,7 @@ import type { Repo } from "./types.js";
 export interface TreeEntry {
 	path: string;
 	mode: string;
-	type: "blob" | "tree";
+	type: "blob" | "tree" | "commit";
 	oid: string;
 	size?: number;
 }
@@ -151,7 +151,7 @@ export async function findTreeEntry(
 			return {
 				path: currentPath,
 				mode: entry.mode,
-				type: entry.type as "blob" | "tree",
+				type: entry.type,
 				oid: entry.oid,
 			};
 		}
@@ -175,7 +175,7 @@ export async function listTreeEntries(
 	return tree.tree.map((entry) => ({
 		path: prefix ? joinPath(prefix, entry.path) : entry.path,
 		mode: entry.mode,
-		type: entry.type as "blob" | "tree",
+		type: entry.type,
 		oid: entry.oid,
 	}));
 }

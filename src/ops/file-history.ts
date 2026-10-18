@@ -66,7 +66,7 @@ export async function getFileHistory(
 		const cachedOid = oidByCommitTree.get(commitTreeOid);
 		if (cachedOid !== undefined) return cachedOid;
 		const entry = await findTreeEntry(repo, commitTreeOid, options.filePath);
-		const oid = entry?.type === "blob" ? entry.oid : null;
+		const oid = entry && entry.type !== "tree" ? entry.oid : null;
 		oidByCommitTree.set(commitTreeOid, oid);
 		return oid;
 	}

@@ -15,6 +15,7 @@ export {
 	writeCommitToBare,
 } from "./commit.js";
 export {
+	type DiffEntry,
 	type DiffFile,
 	type DiffResult,
 	getCommitDiff,
@@ -44,6 +45,11 @@ export {
 export { getLastCommitsForTree } from "./last-commit.js";
 export { analyzeMerge, fastForwardMerge, type MergeAnalysis } from "./merge.js";
 export { withPackedWrites } from "./packed-writes.js";
+export {
+	getSubmodules,
+	parseGitmodules,
+	type SubmoduleConfig,
+} from "./submodules.js";
 export {
 	deleteFromTree,
 	findTreeEntry,

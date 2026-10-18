@@ -266,6 +266,25 @@ const { entries } = await getCommitLog(repo, { ref: "main", depth: 50 });
 
 `resultKeyPrefixes` (from `/ops`) lists the `ResultCache` key prefixes these functions write under — evict them after rewriting a repo's storage out of band (bulk sync, rename), or a cached walk result outlives the history it describes.
 
+## Submodules
+
+Tree entries retain Git's `type: "commit"` and mode `160000` for submodules.
+HTTP reachability, receive-pack validation, upload-pack and repack treat these
+as external pointers and never try to read the submodule commit in the parent.
+`getFileHistory` tracks pointer changes; `getFileContent` only reads blobs.
+
+`getCommitDiff` and `getDiffBetweenRefs` emit `kind: "submodule"` for additions,
+removals, updates and conversions to/from blobs or trees. `oldEntry`/`newEntry`
+carry the object ID, type and mode. Pointer changes do not count as text line
+additions/deletions. Diff results also include the exact `oldRef` (parent or
+merge base, absent for an empty base) and `newRef` used for navigation.
+
+`getSubmodules(repo, ref, hooks?)` reads root `.gitmodules` at that revision;
+`parseGitmodules(text)` parses its named path/URL records without I/O. Neither
+expands includes nor follows URLs. Missing/oversized config returns no records;
+malformed records and ambiguous duplicate paths are ignored. Browser URL
+validation and authorization to other repositories belong to the application.
+
 ## Semantics & limitations
 
 - **Bare repositories are the target.** Plumbing (`writeBlob`/`writeTree`/`writeCommit`/`readCommit`/`log`/refs/branches) is covered by the test suite. Worktree operations (`checkout`, `add`, `status`) want a real disk — hydrate to `/tmp` for those.
