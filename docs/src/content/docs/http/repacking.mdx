@@ -65,10 +65,12 @@ submodules in its history consolidates normally.
 
 isomorphic-git's *packed*-object read path never checks a resolved object's
 SHA-1 against the requested oid, so the new pack is not trusted on the
-strength of how it was built. `git.indexPack` resolves every entry —
-deltas included — and derives each oid by hashing the result. Every
-reachable oid must appear in that index; extra delta bases carried over by
-reuse are fine.
+strength of how it was built. The reachability walk that decides what the
+pack must contain bounds its in-flight reads with one semaphore per walk
+(`MAX_CONCURRENT_READS`), and `git.indexPack` then resolves every entry —
+deltas included — and derives each oid by hashing the result. Every reachable
+oid must appear in that index; extra delta bases carried over by reuse are
+fine.
 
 <Aside type="note">
 	If any reachable oid is missing from the new index, the new pack and

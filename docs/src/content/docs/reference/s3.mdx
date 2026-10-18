@@ -11,6 +11,8 @@ import RuntimeSupport from '../../../components/RuntimeSupport.astro';
 import { S3ObjectStore } from 'git-fs-s3/s3';
 ```
 
+## Runtime support
+
 <RuntimeSupport
 	runtimes={[
 		{ name: 'Node.js', supported: true },
@@ -19,6 +21,8 @@ import { S3ObjectStore } from 'git-fs-s3/s3';
 		{ name: 'Browser', supported: false, note: 'Ships credentials-bearing S3 calls — not meant to run client-side.' },
 	]}
 />
+
+## Constructor
 
 <ApiSignature
 	name="S3ObjectStore"
@@ -37,8 +41,18 @@ import { S3ObjectStore } from 'git-fs-s3/s3';
 	]}
 >
 	Implements `ObjectStore` (see [the guide](/git-fs-s3/guides/object-store/))
-	over any S3-compatible API.
+	over any S3-compatible API, including the optional `getRange`.
 </ApiSignature>
+
+## Range reads
+
+`S3ObjectStore` implements the optional `ObjectStore.getRange` with S3's
+`Range` header, inclusive at both ends, returning `null` when the key doesn't
+exist. This is what lets `getObjectSize` answer an object's size without
+fetching the pack that holds it; a store without `getRange` makes that
+function report `null`, and the caller reads the object instead.
+
+## Example
 
 ```typescript
 import { S3Client } from '@aws-sdk/client-s3';
@@ -58,6 +72,8 @@ const store = new S3ObjectStore({
     /\/(HEAD|config)$|\/refs\//.test(key) ? 'text/plain' : undefined,
 });
 ```
+
+## Notes
 
 <Aside type="tip">
 	One instance per bucket/prefix — but reuse a single `S3Client` across

@@ -52,6 +52,16 @@ same `[]` a genuinely empty repo returns.
 	than a clear, correctly-typed error.
 </Aside>
 
+## Unknown object sizes are not "too large"
+
+`getObjectSize(repo, oid)` returns a number for a packed object it can read,
+and `null` when it can't: a loose object, an object no pack indexes, a store
+without `getRange`, or a delta prefix too short to yield its header. `null`
+means *unknown*, and a caller must then read the object and apply its size
+limit to the result — never treat `null` as "too large". Reporting an unknown
+size as oversized would silently hide readable files, and the fallback is what
+keeps the limit correct on stores that can't serve byte ranges.
+
 ## No rename, no multi-key transactions
 
 Object storage has neither. A caller that needs several keys to become

@@ -13,12 +13,16 @@ something else entirely — it only calls these five methods.
 ```typescript
 interface ObjectStore {
   get(key: string): Promise<Uint8Array | null>;
+  getRange?(key: string, start: number, end: number): Promise<Uint8Array | null>;
   put(key: string, data: Uint8Array): Promise<void>;
   delete(key: string): Promise<void>;
   head(key: string): Promise<ObjectStat | null>;
   list(prefix: string, options?: ListOptions): Promise<ListResult>;
 }
 ```
+
+The five methods above are required. `getRange` is optional — implement it if
+your backend can read a byte range without fetching the whole object.
 
 <Aside type="tip">
 	A missing key is `null`, never a thrown error. Every layer in the stack —
@@ -36,6 +40,27 @@ interface ObjectStore {
 >
 	The object's bytes, or `null` if the key doesn't exist. Never throws for a
 	missing key.
+</ApiSignature>
+
+<ApiSignature
+	name="getRange"
+	signature="getRange?(key: string, start: number, end: number): Promise<Uint8Array | null>"
+	params={[
+		{ name: 'key', type: 'string', description: 'The full object key.' },
+		{ name: 'start', type: 'number', description: 'First byte to return, inclusive.' },
+		{ name: 'end', type: 'number', description: 'Last byte to return, inclusive.' },
+	]}
+	returns="Uint8Array | null"
+>
+	**Optional.** Bytes `start`..`end` of the object, inclusive at both ends,
+	or `null` if the key doesn't exist. A store that can't serve ranges leaves
+	the method undefined, and `getObjectSize` then reports `null` ("size
+	unknown") rather than fetching a whole pack to answer. That fallback is the
+	point: range reads are what let a caller ask *is this object too large?*
+	without paying for the pack that holds it. Exposed on the git-aware fs as
+	`fs.promises.getRange`, again only when the backing store has it, and
+	forwarded by `createCachedStore` straight to the backing store — a few
+	bytes at a known offset gain nothing from the cache.
 </ApiSignature>
 
 <ApiSignature
@@ -138,3 +163,7 @@ const store = new S3ObjectStore({
 	mean hundreds of object reads, and a shared client pools HTTP
 	connections instead of reconnecting per store.
 </Aside>
+
+`S3ObjectStore` implements the optional `getRange` (an S3 `Range` header,
+inclusive at both ends), which `getObjectSize` uses to answer a size without
+fetching the object.

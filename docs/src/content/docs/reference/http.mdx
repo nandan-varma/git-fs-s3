@@ -150,14 +150,21 @@ for a full worked example.
 
 <ApiSignature
 	name="collectReachableOids"
-	signature="collectReachableOids(repo: Repo, startOids: string[], hooks?: HttpHooks): Promise<ReachabilityResult>"
+	signature="collectReachableOids(repo: Repo, startOids: string[], hooks?: HttpHooks, haveOids?: ReadonlySet<string> | readonly string[], options?: { verifyBlobs?: boolean }): Promise<ReachabilityResult>"
+	params={[
+		{ name: 'startOids', type: 'string[]', description: 'The oids to walk from.' },
+		{ name: 'hooks', type: 'HttpHooks', description: 'See the overview page.', optional: true },
+		{ name: 'haveOids', type: 'ReadonlySet<string> | readonly string[]', description: 'Oids assumed already present: they are recorded without being read or descended into. Bounds a fetch to the new objects.', optional: true },
+		{ name: 'options.verifyBlobs', type: 'boolean', description: 'Read blobs too (default <code>true</code>). Set <code>false</code> when the caller reads every blob itself afterwards.', optional: true },
+	]}
 	returns="Promise<ReachabilityResult>"
 >
 	Walks the full object graph from `startOids`. `{ oids, complete }` —
 	`complete: false` if any object in the graph couldn't be read; a missing
 	object is retried once (a read landing mid-repack-transition can
 	transiently miss an object that isn't actually lost) before being
-	reported through `hooks.onWarn`.
+	reported through `hooks.onWarn`. In-flight object reads are bounded by one
+	semaphore per walk (`MAX_CONCURRENT_READS`).
 </ApiSignature>
 
 ## pkt-line framing

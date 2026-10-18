@@ -189,3 +189,11 @@ directory listings on large repos.
 	`oldSize`/`newSize`; fetch either side by path at its ref if it needs
 	displaying.
 </ApiSignature>
+
+The too-large decision is made **before anything is read**: each side's size
+comes from its pack entry (`getObjectSize`), so a file over
+`MAX_DIFF_TEXT_BYTES` is reported as `too-large` without ever being inflated.
+Blob reads and size probes share one semaphore (`MAX_CONCURRENT_READS`), so a
+wide commit can't fan out into one object-store request per entry. When a
+side's size isn't available — a loose object, or a store without `getRange` —
+the blob is read and the same limit is applied afterwards.

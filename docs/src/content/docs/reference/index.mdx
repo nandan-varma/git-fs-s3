@@ -35,6 +35,7 @@ import { /* ... */ } from 'git-fs-s3';
 | `detectLooseObjects` | `(gitdir: string) => Promise<void>` | One bounded LIST that registers the loose-object hint for a gitdir (otherwise done on the first loose-object read). |
 | `prefetchPacks` | `(gitdir: string, opts?: { maxPacks? }) => Promise<void>` | Warms every `.pack`/`.idx` in parallel before a sequential walk. |
 | `invalidate` | `(pathPrefix: string) => void` | Drops hints and registered gitdirs under the prefix and forwards to the store's own `invalidate` if it has one. |
+| `getRange` | `(filepath: string, start: number, end: number) => Promise<Uint8Array \| null>` | Present only when the backing store implements `ObjectStore.getRange`; `getObjectSize` is its only caller. |
 
 ## Object size
 
@@ -113,6 +114,7 @@ in your own request-handling code:
 | `isFullSha` | `(value: string) => boolean` | A full 40-hex-char commit sha. |
 | `isSafeRefName` | `(value: string) => boolean` | Branch name **or** full sha — for read paths that accept a pinned commit. |
 | `isSafeRepoPath` | `(p: string) => boolean` | A repo-relative file path: relative, no `..`, no `.git/` prefix, no null bytes. |
+| `isSafeTreePath` | `(p: string) => boolean` | A tree-relative path: relative, no empty/`.`/`..` segments, no `.git` anywhere. |
 | `qualifyBranchRef` | `(ref: string) => string` | Qualifies a bare name to `refs/heads/<name>`, left untouched if already qualified/`HEAD`/a sha. |
 
 <Aside type="danger">

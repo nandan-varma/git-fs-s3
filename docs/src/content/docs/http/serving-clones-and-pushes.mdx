@@ -155,6 +155,12 @@ Blobs aren't read during the upload-pack walk (their tree entries already
 say what they are); receive-pack and repack still read them, because there
 the walk *is* the existence check.
 
+`collectReachableOids` bounds in-flight object reads with one semaphore per
+walk (`MAX_CONCURRENT_READS` = 16): a permit covers the read itself and is
+released before the walk recurses into that object's children, so a wide tree
+can't fan out into thousands of simultaneous requests and a parent never
+blocks its own children.
+
 ## Share one isomorphic-git `cache` per repository
 
 Pass the same `cache` object on every `repo` for a given repository, across

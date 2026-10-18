@@ -309,6 +309,10 @@ validation and authorization to other repositories belong to the application.
 
 - More stores out of the box (Google Cloud Storage, Azure Blob)
 
+## Changelog
+
+Release notes for every published version are in [CHANGELOG.md](CHANGELOG.md).
+
 ## License
 
 [MIT](LICENSE)
