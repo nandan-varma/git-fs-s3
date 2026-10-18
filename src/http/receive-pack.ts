@@ -289,13 +289,7 @@ export interface ApplyReceivePackOptions {
 	repack?: RepackOptions | false;
 }
 
-/**
- * The storage half of a push against `repo`: initialize if needed, index the
- * incoming pack, CAS-apply ref updates, then repack when enough packs have
- * accumulated. Serialize concurrent pushes to the same repo externally (a
- * per-repo lock); build the HTTP response afterwards with
- * {@link receivePackResponse}.
- */
+/** The outcome of {@link applyReceivePack}. */
 export interface ApplyReceivePackResult {
 	results: RefUpdateResult[];
 	stalePackPaths: string[];
@@ -303,6 +297,19 @@ export interface ApplyReceivePackResult {
 	unpackError?: string;
 }
 
+/**
+ * The storage half of a push against `repo`: initialize if needed, index the
+ * incoming pack, CAS-apply ref updates, then repack when enough packs have
+ * accumulated. Serialize concurrent pushes to the same repo externally (a
+ * per-repo lock); build the HTTP response afterwards with
+ * {@link receivePackResponse}.
+ *
+ * A push that changes nothing must not leak its pack: ref updates only ever
+ * fail here (a stale compare-and-swap, a branch pointed at a non-commit,
+ * HEAD's branch deleted), so when none of them succeeded the incoming pack is
+ * unlinked again — no ref names it, and the threshold repack only runs for
+ * accepted pushes, so nothing would ever reclaim it.
+ */
 export async function applyReceivePack(
 	repo: Repo,
 	parsed: { refUpdates: RefUpdateCommand[]; packData: Uint8Array },
@@ -387,9 +394,16 @@ export async function applyReceivePack(
 				) ?? result)
 			: result,
 	);
+	if (!results.some((result) => result.ok)) {
+		for (const filepath of removableIncoming) {
+			await fsp.unlink(filepath).catch(() => {});
+		}
+		return { results, stalePackPaths: [] };
+	}
 	const repackOptions = options.repack;
+	// Reached only when at least one ref update was applied above.
 	const stalePackPaths =
-		repackOptions === false || !results.some((result) => result.ok)
+		repackOptions === false
 			? []
 			: await runStep(hooks, "repack", () =>
 					repackRepository(repo, repackOptions, hooks),

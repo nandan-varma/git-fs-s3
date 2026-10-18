@@ -1,5 +1,6 @@
 import git from "isomorphic-git";
 import type { Repo } from "../ops/types.js";
+import { createSemaphore } from "../semaphore.js";
 import type { HttpHooks } from "./types.js";
 
 export interface ReachabilityResult {
@@ -25,6 +26,15 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const MISSING_OBJECT_RETRY_DELAY_MS = 200;
 
 /**
+ * In-flight object reads admitted by one {@link collectReachableOids} walk.
+ * High enough that a normal tree's reads stay pipelined (the walk is
+ * latency-bound, not bandwidth-bound), low enough that a tree with tens of
+ * thousands of entries can't fan out into that many simultaneous reads from
+ * one request and exhaust sockets, memory, or the store's rate limit.
+ */
+export const MAX_CONCURRENT_READS = 16;
+
+/**
  * Walk the object graph from `startOids`, returning every reachable oid.
  * Concurrent traversal paths are deduplicated promise-per-oid; a missing
  * object is retried once, then reported through `hooks.onWarn` and
@@ -44,6 +54,12 @@ const MISSING_OBJECT_RETRY_DELAY_MS = 200;
  * without reading (and inflating) it — for callers that read every blob
  * themselves afterwards anyway, like upload-pack's `packObjects`. Leave it
  * true wherever the walk *is* the existence check (receive-pack, repack).
+ *
+ * Object reads are bounded by one shared {@link MAX_CONCURRENT_READS}
+ * semaphore for the whole walk, held only for the read itself — not per
+ * level, since the walk recurses and a per-level limit would still multiply
+ * with depth, and not across the child recursion, which would deadlock a wide
+ * tree once every permit belonged to a parent awaiting its children.
  */
 export async function collectReachableOids(
 	repo: Repo,
@@ -57,9 +73,10 @@ export async function collectReachableOids(
 	const seen = new Set<string>();
 	let complete = true;
 	const promises = new Map<string, Promise<void>>();
+	const reads = createSemaphore(MAX_CONCURRENT_READS);
 
 	async function readAndVisitChildren(oid: string): Promise<void> {
-		const obj = await git.readObject({ ...repo, oid });
+		const obj = await reads.run(() => git.readObject({ ...repo, oid }));
 		seen.add(oid);
 		const children: [string, string | undefined][] = [];
 		if (obj.type === "commit") {

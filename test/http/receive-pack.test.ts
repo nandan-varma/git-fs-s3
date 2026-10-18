@@ -706,4 +706,93 @@ describe("receive-pack — protocol edge cases", () => {
 		const names = await rawFs(repo).readdir("git/objects/pack");
 		expect(names.some((n) => /^pack-[0-9a-f]{40}\.pack$/.test(n))).toBe(true);
 	});
+
+	it("leaves exactly the incoming pack after a successful push", async () => {
+		const repo = await initRepo();
+		const staging = await initRepo();
+		const { packfile, commitOid } = await buildPushPack(
+			staging,
+			undefined,
+			"c",
+		);
+
+		const outcome = await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				body([`${ZERO_OID} ${commitOid} refs/heads/main\n`], packfile),
+			),
+			{ defaultBranch: "main", repack: false },
+		);
+
+		expect(outcome.results).toEqual([{ refName: "refs/heads/main", ok: true }]);
+		const names = (
+			await rawFs(repo)
+				.readdir("git/objects/pack")
+				.catch(() => [])
+		).sort();
+		expect(names).toHaveLength(2);
+		expect(names[0]).toMatch(/^pack-[0-9a-f]{40}\.idx$/);
+		expect(names[1]).toMatch(/^pack-[0-9a-f]{40}\.pack$/);
+		expect(names[0]?.replace(/\.idx$/, "")).toBe(
+			names[1]?.replace(/\.pack$/, ""),
+		);
+	});
+
+	it("leaves no pack behind when every ref update fails", async () => {
+		const repo = await initRepo();
+		const packDir = "git/objects/pack";
+
+		// One accepted push first, so the assertion also covers the guarantee
+		// that cleanup never touches a pack that was already stored.
+		const staging = await initRepo();
+		const first = await buildPushPack(staging, undefined, "first");
+		await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				body(
+					[`${ZERO_OID} ${first.commitOid} refs/heads/main\n`],
+					first.packfile,
+				),
+			),
+			{ defaultBranch: "main", repack: false },
+		);
+		const before = (
+			await rawFs(repo)
+				.readdir(packDir)
+				.catch(() => [])
+		).sort();
+		expect(before).toHaveLength(2);
+
+		// A push that passes the CAS preflight but fails the ref-application
+		// checks: refs/heads/bad is pointed at a tree, not a commit. Its pack
+		// is indexed first (objects land before any ref names them), so the
+		// whole push must be undone by unlinking it.
+		const second = await buildPushPack(staging, first.commitOid, "second");
+		const { commit } = await git.readCommit({
+			...staging,
+			oid: second.commitOid,
+		});
+		const outcome = await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				body([`${ZERO_OID} ${commit.tree} refs/heads/bad\n`], second.packfile),
+			),
+			{ defaultBranch: "main", repack: false },
+		);
+
+		expect(outcome.results).toEqual([
+			{
+				refName: "refs/heads/bad",
+				ok: false,
+				reason: "branch must point at a commit, not a tree",
+			},
+		]);
+		expect(
+			(
+				await rawFs(repo)
+					.readdir(packDir)
+					.catch(() => [])
+			).sort(),
+		).toEqual(before);
+	});
 });

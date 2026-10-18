@@ -11,15 +11,42 @@ export const FLUSH: Uint8Array<ArrayBuffer> = new Uint8Array([
 	0x30, 0x30, 0x30, 0x30,
 ]); // "0000"
 
-/** Frame a UTF-8 string as one pkt-line. */
+/**
+ * A pkt-line length prefix is four hex digits, so 0xffff (65535) bytes total
+ * is the most a frame can describe — a body of 65531. Callers with longer
+ * payloads must chunk them (see {@link sideBandPackfile}); framing one here
+ * would emit a five-digit prefix no client can parse.
+ */
+const PKT_LINE_MAX_BODY = 0xffff - 4;
+
+function assertPktLineFits(bodyLength: number): void {
+	if (bodyLength > PKT_LINE_MAX_BODY) {
+		throw new Error(
+			`pkt-line body of ${bodyLength} bytes exceeds the protocol limit of ${PKT_LINE_MAX_BODY} bytes (0xffff total, including the 4-hex-digit length prefix)`,
+		);
+	}
+}
+
+/**
+ * Frame a UTF-8 string as one pkt-line. The 65531-byte body limit is a
+ * property of pkt-line framing, not of this function: the length prefix is
+ * fixed at four hex digits, so a longer frame is unparseable rather than
+ * merely unusual.
+ */
 export function pktLine(data: string): Uint8Array<ArrayBuffer> {
 	const body = encodeUtf8(data);
+	assertPktLineFits(body.length);
 	const len = (body.length + 4).toString(16).padStart(4, "0");
 	return concat(encodeUtf8(len), body);
 }
 
-/** Frame raw bytes as one pkt-line. */
+/**
+ * Frame raw bytes as one pkt-line. Throws above the 65531-byte body limit of
+ * the framing itself (see {@link pktLine}) instead of emitting a malformed
+ * frame.
+ */
 export function pktLineBuffer(body: Uint8Array): Uint8Array<ArrayBuffer> {
+	assertPktLineFits(body.length);
 	const len = (body.length + 4).toString(16).padStart(4, "0");
 	return concat(encodeUtf8(len), body);
 }
