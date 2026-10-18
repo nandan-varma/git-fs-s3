@@ -315,4 +315,19 @@ Release notes for every published version are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE)
+Copyright (C) 2026 Nandan Varma.
+
+`git-fs-s3` is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+It is distributed in the hope that it will be useful, but **without any
+warranty**; without even the implied warranty of merchantability or fitness for
+a particular purpose. See the [GNU Affero General Public License](LICENSE) for
+the full terms.
+
+**Licence change:** published versions up to and including `0.11.0` remain
+MIT and are still installable. From the next release onward this package is
+AGPL-3.0-or-later, so a network service built on it must offer its users the
+corresponding source.

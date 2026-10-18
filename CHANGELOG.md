@@ -3,6 +3,15 @@
 Releases of `git-fs-s3`, derived from this repository's release history. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Licence: AGPL-3.0-or-later (was MIT). Versions up to and including
+  `0.11.0` were published under MIT and remain available under it; from the
+  next release onward, a network service built on this package must offer its
+  users the corresponding source (AGPL section 13).
+
 ## [0.11.0] - 2026-10-18
 
 ### Added
