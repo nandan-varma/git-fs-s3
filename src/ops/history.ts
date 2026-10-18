@@ -1,5 +1,4 @@
 import git from "isomorphic-git";
-import { decodeUtf8, hasNullByte, toBase64 } from "../edge-utils.js";
 import {
 	GitObjectNotFoundError,
 	GitPathNotFoundError,
@@ -9,30 +8,15 @@ import { qualifyBranchRef } from "../refs.js";
 import { findTreeEntry, listTreeEntries, type TreeEntry } from "./tree.js";
 import { type OpsHooks, type Repo, runStep } from "./types.js";
 
-/**
- * A resolved ref (branch/commit) not existing is a normal, expected condition
- * (empty repo, unborn branch) and is handled by each caller. An object that
- * fails to resolve *underneath* an already-resolved ref (a tree/blob the
- * stored pack doesn't actually contain) means the repo's storage is
- * inconsistent — surface that distinctly so callers don't render it as
- * "empty" and clients don't see a raw isomorphic-git NotFoundError.
- */
-function wrapMissingObject<T>(
-	promise: Promise<T>,
-	context: string,
-): Promise<T> {
-	return promise.catch((err: unknown) => {
-		if ((err as { code?: string })?.code === "NotFoundError") {
-			throw new GitObjectNotFoundError(
-				`Git data for ${context} is missing from storage. The repository may need to be re-pushed to repair it.`,
-			);
-		}
-		throw err;
-	});
-}
+/** How far back history walks look by default (commit count). */
+export const HISTORY_WALK_DEPTH = 400;
 
-const isNotFound = (err: unknown) =>
-	(err as { code?: string })?.code === "NotFoundError";
+export interface GitIdentity {
+	name: string;
+	email: string;
+	timestamp: number;
+	timezoneOffset: number;
+}
 
 export interface CommitInfo {
 	oid: string;
@@ -40,46 +24,74 @@ export interface CommitInfo {
 		message: string;
 		tree: string;
 		parent: string[];
-		author: {
-			name: string;
-			email: string;
-			timestamp: number;
-			timezoneOffset: number;
-		};
-		committer: {
-			name: string;
-			email: string;
-			timestamp: number;
-			timezoneOffset: number;
-		};
+		author: GitIdentity;
+		committer: GitIdentity;
 	};
 	payload: string;
 }
 
+/** The display summary of a commit (history lists, "last commit" columns). */
+export interface CommitSummary {
+	sha: string;
+	message: string;
+	authorName: string;
+	authorEmail: string;
+	/** ISO 8601 author date. */
+	createdAt: string;
+}
+
+export function summarizeCommit(commit: CommitInfo): CommitSummary {
+	return {
+		sha: commit.oid,
+		message: commit.commit.message.trim(),
+		authorName: commit.commit.author.name,
+		authorEmail: commit.commit.author.email,
+		createdAt: new Date(commit.commit.author.timestamp * 1000).toISOString(),
+	};
+}
+
+const isNotFound = (err: unknown) =>
+	(err as { code?: string } | null)?.code === "NotFoundError";
+
 /**
- * Resolve a branch name / full ref / sha to its commit. The ref not
- * resolving (unborn branch, genuinely empty repo) and the ref resolving but
- * its commit object being unreadable (storage inconsistency — see
- * `wrapMissingObject` above) are different failures with different meanings,
- * so only the first is left as a raw isomorphic-git NotFoundError for
- * callers to treat as "empty"; the second is wrapped into
- * GitObjectNotFoundError specifically so it can't be mistaken for the first
- * by an `isNotFound`-style check downstream (see getTreeFromRef/getCommitLog).
+ * A ref that doesn't resolve is an expected condition (empty repo, unborn
+ * branch) each caller handles. An object missing *underneath* a resolved ref
+ * means storage is inconsistent — raised as GitObjectNotFoundError so it is
+ * never mistaken for "empty".
  */
+function wrapMissingObject<T>(
+	promise: Promise<T>,
+	context: string,
+): Promise<T> {
+	return promise.catch((err: unknown) => {
+		if (isNotFound(err)) {
+			throw new GitObjectNotFoundError(
+				`Git data for ${context} is missing from storage`,
+			);
+		}
+		throw err;
+	});
+}
+
+/** The commit a branch name, full ref or sha points at; GitRefNotFoundError if none. */
+async function resolveRefOid(repo: Repo, ref: string): Promise<string> {
+	try {
+		return await git.resolveRef({ ...repo, ref: qualifyBranchRef(ref) });
+	} catch (err) {
+		if (isNotFound(err))
+			throw new GitRefNotFoundError(`Ref ${ref} does not exist`);
+		throw err;
+	}
+}
+
+/** Resolve a branch name / full ref / sha to its commit. */
 export async function resolveCommit(repo: Repo, ref: string) {
-	const oid = await git
-		.resolveRef({ ...repo, ref: qualifyBranchRef(ref) })
-		.catch((err: unknown) => {
-			if (isNotFound(err)) {
-				throw new GitRefNotFoundError(`Ref ${ref} does not exist`);
-			}
-			throw err;
-		});
-	const result = await wrapMissingObject(
+	const oid = await resolveRefOid(repo, ref);
+	const { commit } = await wrapMissingObject(
 		git.readCommit({ ...repo, oid }),
 		`${repo.gitdir} commit ${oid}`,
 	);
-	return { oid, commit: result.commit };
+	return { oid, commit };
 }
 
 /** Read a blob's bytes by oid. */
@@ -98,26 +110,18 @@ export async function getFileContent(
 	ref: string,
 	hooks?: OpsHooks,
 ): Promise<Uint8Array> {
-	// A blob page needs a commit, one or more tree objects, and the blob. On a
-	// multi-pack object store, letting isomorphic-git discover those packs one
-	// at a time turns that otherwise short read into a serial network walk.
-	// Warm every pack before resolving the ref so every later object lookup can
-	// use the local parse cache. This is the same structural optimization used
-	// for tree and history reads, now applied to file reads as well.
-	if (hooks?.prefetch) {
-		await runStep(hooks, "prefetch", hooks.prefetch);
-	}
+	// A commit, a tree per path segment, then the blob: warm every pack first
+	// rather than discovering them one round trip at a time.
+	if (hooks?.prefetch) await runStep(hooks, "prefetch", hooks.prefetch);
 	const { commit } = await resolveCommit(repo, ref);
 	const context = `${repo.gitdir}@${ref}:${filePath}`;
 	const entry = await wrapMissingObject(
 		findTreeEntry(repo, commit.tree, filePath),
 		context,
 	);
-
 	if (entry?.type !== "blob") {
 		throw new GitPathNotFoundError(`File not found: ${filePath}`);
 	}
-
 	const { blob } = await wrapMissingObject(
 		git.readBlob({ ...repo, oid: entry.oid }),
 		context,
@@ -134,28 +138,18 @@ export async function getCommit(repo: Repo, sha: string): Promise<CommitInfo> {
 	return { oid: result.oid, commit: result.commit, payload: result.payload };
 }
 
-function isFullyWalked(commits: CommitInfo[]): boolean {
-	const last = commits[commits.length - 1];
-	return !!last && last.commit.parent.length === 0;
-}
-
 export interface CommitLogOptions {
 	ref: string;
 	depth?: number;
-	/**
-	 * Pass the head sha when the caller already resolved `ref` — resolveRef
-	 * tries several candidate paths in sequence and misses the first few every
-	 * time for a normal branch name, which is pure waste when the sha is known.
-	 */
+	/** The ref's commit, when the caller already resolved it (saves a lookup). */
 	knownHeadSha?: string;
 }
 
 /**
- * The commit chain from a ref, newest first. Walking is inherently sequential
- * (each commit's oid is only discoverable by reading its child first) and
- * network-round-trip-bound against object storage, so the deepest walk seen
- * per head is memoized in `hooks.resultCache` and sliced for shallower or
- * repeated requests — don't bypass this by calling `git.log` directly.
+ * The commit chain from a ref, newest first; [] when the ref doesn't exist.
+ * Walking is sequential and round-trip-bound on object storage, so the
+ * deepest walk seen per head is memoized in `hooks.resultCache` and sliced
+ * for shallower requests.
  */
 export async function getCommitLog(
 	repo: Repo,
@@ -164,53 +158,36 @@ export async function getCommitLog(
 ): Promise<CommitInfo[]> {
 	const { ref } = options;
 	const depth = options.depth ?? 50;
-
-	let headSha: string;
-	if (options.knownHeadSha) {
-		headSha = options.knownHeadSha;
-	} else {
+	let headSha = options.knownHeadSha;
+	if (headSha === undefined) {
 		try {
-			headSha = await git.resolveRef({ ...repo, ref: qualifyBranchRef(ref) });
-		} catch (err: unknown) {
-			if (isNotFound(err)) return [];
+			headSha = await resolveRefOid(repo, ref);
+		} catch (err) {
+			if (err instanceof GitRefNotFoundError) return [];
 			throw err;
 		}
 	}
 
 	const cacheKey = `commitlog:${repo.gitdir}:${headSha}`;
 	const cached = hooks?.resultCache?.get<CommitInfo[]>(cacheKey);
-	if (cached && (cached.length >= depth || isFullyWalked(cached))) {
-		hooks?.onNote?.(
-			`getCommitLog: result-cache HIT for ${cacheKey} (depth=${depth})`,
-		);
+	const fullyWalked = cached?.at(-1)?.commit.parent.length === 0;
+	if (cached && (cached.length >= depth || fullyWalked)) {
+		hooks?.onNote?.(`getCommitLog: cache hit ${cacheKey} (depth=${depth})`);
 		return cached.slice(0, depth);
 	}
-	hooks?.onNote?.(
-		`getCommitLog: result-cache MISS for ${cacheKey} (depth=${depth})`,
-	);
+	hooks?.onNote?.(`getCommitLog: cache miss ${cacheKey} (depth=${depth})`);
+	if (hooks?.prefetch) await runStep(hooks, "prefetch", hooks.prefetch);
 
-	if (hooks?.prefetch && depth >= (hooks.prefetchMinDepth ?? 5)) {
-		await runStep(hooks, "prefetch", hooks.prefetch);
-	}
-
-	// headSha is already known-good here (resolveRef above succeeded, or the
-	// caller passed knownHeadSha) — a NotFoundError from the walk itself means
-	// a commit/tree/blob it needs is missing from storage, not that the ref
-	// doesn't exist. Unlike the resolveRef catch above, that's not "empty",
-	// it's storage inconsistency, so wrapMissingObject turns it into a
-	// GitObjectNotFoundError instead of silently returning [] — an empty
-	// result here would otherwise get treated as "this branch has no
-	// history" by every caller (and, worse, potentially cached as such).
-	const commits = await wrapMissingObject(
+	const log = await wrapMissingObject(
 		runStep(hooks, `git.log ${ref} depth=${depth}`, () =>
 			git.log({ ...repo, ref: headSha, depth }),
 		),
 		`${repo.gitdir}@${ref} history`,
 	);
-	const result = commits.map((commit) => ({
-		oid: commit.oid,
-		commit: commit.commit,
-		payload: commit.payload || "",
+	const result = log.map(({ oid, commit, payload }) => ({
+		oid,
+		commit,
+		payload: payload ?? "",
 	}));
 	if (!cached || result.length > cached.length) {
 		hooks?.resultCache?.set(cacheKey, result);
@@ -218,28 +195,10 @@ export async function getCommitLog(
 	return result;
 }
 
-/** A file at a ref, decoded for display: utf8 text or base64 when binary. */
-export async function getFileFromRef(
-	repo: Repo,
-	filePath: string,
-	ref: string,
-	hooks?: OpsHooks,
-): Promise<{ content: string; size: number; isBinary: boolean }> {
-	const bytes = await getFileContent(repo, filePath, ref, hooks);
-	const isBinary = hasNullByte(bytes);
-
-	return {
-		content: isBinary ? toBase64(bytes) : decodeUtf8(bytes),
-		size: bytes.length,
-		isBinary,
-	};
-}
-
 /**
  * List a directory at the tip of a ref. Throws GitRefNotFoundError when the
- * ref doesn't resolve (including an empty repo's unborn branch) and
- * GitPathNotFoundError when `treePath` doesn't exist. Results are memoized per
- * head sha (auto-invalidates on push).
+ * ref doesn't resolve and GitPathNotFoundError when `treePath` doesn't exist.
+ * Memoized per head sha.
  */
 export async function getTreeFromRef(
 	repo: Repo,
@@ -253,63 +212,42 @@ export async function getTreeFromRef(
 	const cacheKey = `tree:${repo.gitdir}:${headSha}:${treePath}`;
 	const cached = hooks?.resultCache?.get<TreeEntry[]>(cacheKey);
 	if (cached) {
-		hooks?.onNote?.(`getTreeFromRef: result-cache HIT for ${cacheKey}`);
+		hooks?.onNote?.(`getTreeFromRef: cache hit ${cacheKey}`);
 		return cached;
 	}
-	hooks?.onNote?.(`getTreeFromRef: result-cache MISS for ${cacheKey}`);
-
-	// Unlike getCommitLog, a tree read has no "depth" to gate on — it always
-	// needs at least the head commit's tree object, and (for a non-root path)
-	// one object per path segment on top of that, so there's no shallow case
-	// where prefetching every pack is wasted bandwidth the way a depth=1
-	// commit-log walk can be. Without this, a cache-miss tree read falls
-	// through to isomorphic-git's own pack resolution, which probes indexed
-	// packs one at a time instead of warming them all in parallel up front —
-	// this was previously the slowest of a tree page's parallel queries in
-	// production for exactly that reason.
-	if (hooks?.prefetch) {
-		await runStep(hooks, "prefetch", hooks.prefetch);
-	}
+	hooks?.onNote?.(`getTreeFromRef: cache miss ${cacheKey}`);
+	if (hooks?.prefetch) await runStep(hooks, "prefetch", hooks.prefetch);
 
 	const context = `${repo.gitdir}@${ref}:${treePath || "/"}`;
-	let result: TreeEntry[];
-	if (!treePath) {
-		result = await wrapMissingObject(
-			runStep(hooks, "listTreeEntries (root)", () =>
-				listTreeEntries(repo, commit.tree),
-			),
-			context,
+	const dir = treePath
+		? await wrapMissingObject(
+				runStep(hooks, `findTreeEntry ${treePath}`, () =>
+					findTreeEntry(repo, commit.tree, treePath),
+				),
+				context,
+			)
+		: { path: "", type: "tree" as const, oid: commit.tree };
+	if (!dir) {
+		throw new GitPathNotFoundError(
+			`Path "${treePath}" does not exist at ${ref}`,
 		);
-	} else {
-		const entry = await wrapMissingObject(
-			runStep(hooks, `findTreeEntry ${treePath}`, () =>
-				findTreeEntry(repo, commit.tree, treePath),
-			),
-			context,
-		);
-		if (!entry) {
-			throw new GitPathNotFoundError(
-				`Path "${treePath}" does not exist at ${ref}`,
-			);
-		}
-		result =
-			entry.type !== "tree"
-				? []
-				: await wrapMissingObject(
-						runStep(hooks, `listTreeEntries ${treePath}`, () =>
-							listTreeEntries(repo, entry.oid, entry.path),
-						),
-						context,
-					);
 	}
-
+	const result =
+		dir.type === "tree"
+			? await wrapMissingObject(
+					runStep(hooks, `listTreeEntries ${treePath || "/"}`, () =>
+						listTreeEntries(repo, dir.oid, dir.path),
+					),
+					context,
+				)
+			: [];
 	hooks?.resultCache?.set(cacheKey, result);
 	return result;
 }
 
 /**
- * A page of commit history from a branch tip. Memoized per head sha; builds
- * on {@link getCommitLog}'s walk cache for the underlying chain.
+ * A page of commit history from a ref tip; [] when the ref doesn't exist.
+ * Pages are slices of {@link getCommitLog}'s memoized walk.
  */
 export async function getCommitHistory(
 	repo: Repo,
@@ -318,32 +256,10 @@ export async function getCommitHistory(
 ): Promise<CommitInfo[]> {
 	const limit = options.limit ?? 50;
 	const skip = options.skip ?? 0;
-	const headSha = await git
-		.resolveRef({ ...repo, ref: qualifyBranchRef(options.ref) })
-		.catch(() => null);
-
-	const cacheKey = headSha
-		? `commits:${repo.gitdir}:${headSha}:${limit}:${skip}`
-		: null;
-	if (cacheKey) {
-		const cached = hooks?.resultCache?.get<CommitInfo[]>(cacheKey);
-		if (cached) {
-			hooks?.onNote?.(`getCommitHistory: result-cache HIT for ${cacheKey}`);
-			return cached;
-		}
-	}
-	hooks?.onNote?.(
-		`getCommitHistory: result-cache MISS for ${cacheKey ?? "(no head)"}`,
-	);
-	if (!headSha) return [];
-
-	const all = await getCommitLog(
+	const log = await getCommitLog(
 		repo,
-		{ ref: options.ref, depth: limit + skip, knownHeadSha: headSha },
+		{ ref: options.ref, depth: limit + skip },
 		hooks,
 	);
-	const result = all.slice(skip, skip + limit);
-
-	if (cacheKey) hooks?.resultCache?.set(cacheKey, result);
-	return result;
+	return log.slice(skip, skip + limit);
 }

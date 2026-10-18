@@ -44,7 +44,7 @@ interface IndexedPack {
 }
 
 /** An object's position in a pack, as listed by its `.idx`. */
-export interface PackIndexEntry {
+interface PackIndexEntry {
 	readonly oid: string;
 	readonly offset: number;
 }

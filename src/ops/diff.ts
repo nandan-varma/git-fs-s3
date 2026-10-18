@@ -1,8 +1,7 @@
 import { createTwoFilesPatch } from "diff";
-import git from "isomorphic-git";
+import git, { type WalkerEntry } from "isomorphic-git";
 import { readBlobContent } from "../edge-utils.js";
-import { qualifyBranchRef } from "../refs.js";
-import { getCommit } from "./history.js";
+import { getCommit, resolveCommit } from "./history.js";
 import type { Repo } from "./types.js";
 
 /** Text files larger than this get no patch (kind "too-large"). */
@@ -10,7 +9,7 @@ export const MAX_DIFF_TEXT_BYTES = 1024 * 1024;
 
 export interface DiffFile {
 	path: string;
-	status: "added" | "modified" | "deleted" | "renamed";
+	status: "added" | "modified" | "deleted";
 	/**
 	 * "text" has a unified `patch`; "binary" (a NUL byte on either side) and
 	 * "too-large" (text over MAX_DIFF_TEXT_BYTES) don't — fetch the sides by
@@ -20,7 +19,6 @@ export interface DiffFile {
 	additions: number;
 	deletions: number;
 	patch: string;
-	oldPath?: string;
 	/** Byte size before the change; absent for an added file. */
 	oldSize?: number;
 	/** Byte size after the change; absent for a deleted file. */
@@ -34,66 +32,35 @@ export interface DiffResult {
 	totalFiles: number;
 }
 
-/** Binary detection via null-byte heuristic. */
-function detectBlobContent(blob: Uint8Array): {
-	isBinary: boolean;
-	text: string;
-	bytes: Uint8Array;
-} {
-	return readBlobContent(blob);
-}
+type BlobContent = ReturnType<typeof readBlobContent>;
 
 function countContentLines(content: string): number {
 	if (content.length === 0) return 0;
 	const lines = content.split("\n");
-	if (lines[lines.length - 1] === "") lines.pop();
+	if (lines.at(-1) === "") lines.pop();
 	return lines.length;
 }
 
-function createUnifiedPatch(params: {
-	path: string;
-	before: string;
-	after: string;
-	oldPath?: string;
-	newPath?: string;
-}): string {
-	const oldPath = params.oldPath ?? `a/${params.path}`;
-	const newPath = params.newPath ?? `b/${params.path}`;
-	const patchBody = createTwoFilesPatch(
-		oldPath,
-		newPath,
-		params.before,
-		params.after,
+function unifiedPatch(
+	path: string,
+	before: BlobContent | null,
+	after: BlobContent | null,
+): string {
+	const body = createTwoFilesPatch(
+		before ? `a/${path}` : "/dev/null",
+		after ? `b/${path}` : "/dev/null",
+		before?.text ?? "",
+		after?.text ?? "",
 		"",
 		"",
 		{ context: 3 },
 	).replace(/^=+\n/, "");
-
-	return `diff --git a/${params.path} b/${params.path}\n${patchBody}`;
+	return `diff --git a/${path} b/${path}\n${body}`;
 }
 
-function summarizeDiff(files: DiffFile[]): DiffResult {
-	return {
-		files,
-		totalAdditions: files.reduce((sum, f) => sum + f.additions, 0),
-		totalDeletions: files.reduce((sum, f) => sum + f.deletions, 0),
-		totalFiles: files.length,
-	};
-}
-
-type BlobContent = { isBinary: boolean; text: string; bytes: Uint8Array };
-
-/**
- * Build one `DiffFile` from a path's before/after content — `before: null`
- * for an added file, `after: null` for a deleted one, both present for a
- * modification. The shared core of walkTreeDiff's three branches and
- * getCommitDiff's root-commit case (every file is an addition there, with no
- * two-tree walk to drive it), which each used to duplicate this field
- * construction independently.
- */
+/** One changed path: `before` null for an addition, `after` null for a deletion. */
 function buildDiffFile(
 	path: string,
-	status: DiffFile["status"],
 	before: BlobContent | null,
 	after: BlobContent | null,
 ): DiffFile {
@@ -107,79 +74,69 @@ function buildDiffFile(
 	const isText = kind === "text";
 	return {
 		path,
-		status,
+		status: !before ? "added" : !after ? "deleted" : "modified",
 		kind,
 		additions: isText && after ? countContentLines(after.text) : 0,
 		deletions: isText && before ? countContentLines(before.text) : 0,
-		patch: isText
-			? createUnifiedPatch({
-					path,
-					before: before?.text ?? "",
-					after: after?.text ?? "",
-					oldPath: before ? undefined : "/dev/null",
-					newPath: after ? undefined : "/dev/null",
-				})
-			: "",
+		patch: isText ? unifiedPatch(path, before, after) : "",
 		oldSize: before?.bytes.length,
 		newSize: after?.bytes.length,
 	};
 }
 
 /**
- * Walk two trees (oldOid -> newOid) and return one DiffFile per changed path
- * — the shared core of both {@link getCommitDiff} (parent -> commit) and
- * {@link getDiffBetweenRefs} (base -> compare).
+ * Every file that differs between two trees; `oldTreeOid` null diffs against
+ * nothing (a root commit: every file is an addition).
  */
-async function walkTreeDiff(
+async function diffTrees(
 	repo: Repo,
-	oldOid: string,
-	newOid: string,
-): Promise<DiffFile[]> {
-	const changes = await git.walk({
+	oldTreeOid: string | null,
+	newTreeOid: string,
+): Promise<DiffResult> {
+	const readSide = async (entry: WalkerEntry | null) => {
+		if (!entry || (await entry.type()) !== "blob") return null;
+		const { blob } = await git.readBlob({ ...repo, oid: await entry.oid() });
+		return readBlobContent(blob);
+	};
+	const trees = oldTreeOid
+		? [git.TREE({ ref: oldTreeOid }), git.TREE({ ref: newTreeOid })]
+		: [git.TREE({ ref: newTreeOid })];
+	const changes: (DiffFile | undefined)[] = await git.walk({
 		...repo,
-		trees: [git.TREE({ ref: oldOid }), git.TREE({ ref: newOid })],
-		map: async (filepath, [A, B]) => {
-			const [typeA, typeB] = await Promise.all([A?.type(), B?.type()]);
-
-			if (typeA === "tree" || typeB === "tree") return;
-
-			if (typeA && !typeB) {
-				const oidA = A ? await A.oid() : "";
-				const { blob } = await git.readBlob({ ...repo, oid: oidA });
-				const before = detectBlobContent(blob);
-				return buildDiffFile(filepath, "deleted", before, null);
-			}
-
-			if (!typeA && typeB) {
-				const oidB = B ? await B.oid() : "";
-				const { blob } = await git.readBlob({ ...repo, oid: oidB });
-				const after = detectBlobContent(blob);
-				return buildDiffFile(filepath, "added", null, after);
-			}
-
-			const [oidA, oidB] = await Promise.all([
-				A ? A.oid() : Promise.resolve(""),
-				B ? B.oid() : Promise.resolve(""),
+		trees,
+		map: async (filepath, entries) => {
+			const [oldEntry, newEntry] = oldTreeOid
+				? [entries[0] ?? null, entries[1] ?? null]
+				: [null, entries[0] ?? null];
+			const [oldType, newType] = await Promise.all([
+				oldEntry?.type(),
+				newEntry?.type(),
 			]);
-
-			if (oidA !== oidB) {
-				const [{ blob: blobA }, { blob: blobB }] = await Promise.all([
-					git.readBlob({ ...repo, oid: oidA }),
-					git.readBlob({ ...repo, oid: oidB }),
+			// Directories recurse; only blobs become diff entries.
+			if (oldType !== "blob" && newType !== "blob") return undefined;
+			if (oldEntry && newEntry && oldType === newType) {
+				const [oldOid, newOid] = await Promise.all([
+					oldEntry.oid(),
+					newEntry.oid(),
 				]);
-				const before = detectBlobContent(blobA);
-				const after = detectBlobContent(blobB);
-				return buildDiffFile(filepath, "modified", before, after);
+				if (oldOid === newOid) return undefined;
 			}
-
-			return null;
+			const [before, after] = await Promise.all([
+				readSide(oldEntry),
+				readSide(newEntry),
+			]);
+			return before || after
+				? buildDiffFile(filepath, before, after)
+				: undefined;
 		},
 	});
-
-	return (changes ?? []).filter(
-		(c: DiffFile | null | undefined): c is DiffFile =>
-			c !== null && c !== undefined,
-	);
+	const files = (changes ?? []).filter((file): file is DiffFile => !!file);
+	return {
+		files,
+		totalAdditions: files.reduce((sum, f) => sum + f.additions, 0),
+		totalDeletions: files.reduce((sum, f) => sum + f.deletions, 0),
+		totalFiles: files.length,
+	};
 }
 
 /** The diff a single commit introduced (against its first parent). */
@@ -187,61 +144,38 @@ export async function getCommitDiff(
 	repo: Repo,
 	commitSha: string,
 ): Promise<DiffResult> {
-	try {
-		const commit = await getCommit(repo, commitSha);
-		const parent = commit.commit.parent[0];
-
-		if (!parent) {
-			const entries: { path: string; oid: string }[] = [];
-			const stack: { treeOid: string; prefix: string }[] = [
-				{ treeOid: commit.commit.tree, prefix: "" },
-			];
-
-			while (stack.length) {
-				const { treeOid, prefix } = stack.pop() as {
-					treeOid: string;
-					prefix: string;
-				};
-				const { tree } = await git.readTree({ ...repo, oid: treeOid });
-				for (const entry of tree) {
-					const full = prefix ? `${prefix}/${entry.path}` : entry.path;
-					if (entry.type === "tree") {
-						stack.push({ treeOid: entry.oid, prefix: full });
-					} else if (entry.type === "blob") {
-						entries.push({ path: full, oid: entry.oid });
-					}
-				}
-			}
-
-			const files: DiffFile[] = await Promise.all(
-				entries.map(async ({ path, oid }) => {
-					const { blob } = await git.readBlob({ ...repo, oid });
-					const after = detectBlobContent(blob);
-					return buildDiffFile(path, "added", null, after);
-				}),
-			);
-
-			return summarizeDiff(files);
-		}
-
-		const files = await walkTreeDiff(repo, parent, commitSha);
-		return summarizeDiff(files);
-	} catch (error) {
-		throw new Error(`Failed to get commit diff: ${error}`);
-	}
+	const { commit } = await getCommit(repo, commitSha);
+	const parent = commit.parent[0];
+	const parentTree = parent
+		? (await getCommit(repo, parent)).commit.tree
+		: null;
+	return diffTrees(repo, parentTree, commit.tree);
 }
 
-/** The diff between two refs (base -> compare). */
+/**
+ * What `compareRef` changed since it diverged from `baseRef` — a pull
+ * request's diff (git's three-dot `base...compare`): compared against their
+ * merge base, so commits that landed on `baseRef` since the branch point
+ * don't show up as reverted. Throws GitRefNotFoundError for a missing ref.
+ */
 export async function getDiffBetweenRefs(
 	repo: Repo,
 	baseRef: string,
 	compareRef: string,
 ): Promise<DiffResult> {
-	const [baseOid, compareOid] = await Promise.all([
-		git.resolveRef({ ...repo, ref: qualifyBranchRef(baseRef) }),
-		git.resolveRef({ ...repo, ref: qualifyBranchRef(compareRef) }),
+	const [base, compare] = await Promise.all([
+		resolveCommit(repo, baseRef),
+		resolveCommit(repo, compareRef),
 	]);
-
-	const files = await walkTreeDiff(repo, baseOid, compareOid);
-	return summarizeDiff(files);
+	const [mergeBase] = await git.findMergeBase({
+		...repo,
+		oids: [base.oid, compare.oid],
+	});
+	const baseTree =
+		mergeBase === undefined
+			? null
+			: mergeBase === base.oid
+				? base.commit.tree
+				: (await getCommit(repo, mergeBase)).commit.tree;
+	return diffTrees(repo, baseTree, compare.commit.tree);
 }

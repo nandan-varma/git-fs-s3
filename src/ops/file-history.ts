@@ -1,18 +1,15 @@
-import { type CommitInfo, getCommitLog } from "./history.js";
+import {
+	type CommitSummary,
+	getCommitLog,
+	HISTORY_WALK_DEPTH,
+	summarizeCommit,
+} from "./history.js";
 import { findTreeEntry } from "./tree.js";
 import type { OpsHooks, Repo } from "./types.js";
 import { runStep } from "./types.js";
 
-export interface FileHistoryEntry {
-	sha: string;
-	message: string;
-	authorName: string;
-	authorEmail: string;
-	createdAt: string;
-}
-
 export interface FileHistoryResult {
-	entries: FileHistoryEntry[];
+	entries: CommitSummary[];
 	/**
 	 * True when the walk hit its depth budget (or the requested `limit`)
 	 * before exhausting the branch's full commit chain — there may be older
@@ -22,32 +19,13 @@ export interface FileHistoryResult {
 }
 
 /**
- * Default walk bound for a caller that actually wants deep history (a file's
- * "History" tab). Walking the full chain is round-trip-bound on object
- * storage, so cap how far back a single request will look.
- */
-export const HISTORY_WALK_DEPTH = 400;
-
-/**
- * Much shallower default for a "latest commit touching this file" banner that
- * only displays `entries[0]` — trades "always finds the true last-touching
- * commit" for "finds it if it's reasonably recent", the right call for a
- * banner with a full History view a click away.
+ * A shallow walk for a "latest commit touching this file" banner, which only
+ * shows `entries[0]`; a full History view is a click away.
  */
 export const BANNER_WALK_DEPTH = 60;
 
 /** Tree reads are prefetched in parallel windows; see getLastCommitsForTree. */
 const PREFETCH_WINDOW = 24;
-
-function toEntry(commit: CommitInfo): FileHistoryEntry {
-	return {
-		sha: commit.oid,
-		message: commit.commit.message.trim(),
-		authorName: commit.commit.author.name,
-		authorEmail: commit.commit.author.email,
-		createdAt: new Date(commit.commit.author.timestamp * 1000).toISOString(),
-	};
-}
 
 /**
  * All commits (newest first) that changed a single file's blob oid, walking
@@ -93,7 +71,7 @@ export async function getFileHistory(
 		return oid;
 	}
 
-	const entries: FileHistoryEntry[] = [];
+	const entries: CommitSummary[] = [];
 	let truncated = false;
 
 	outer: for (
@@ -132,7 +110,7 @@ export async function getFileHistory(
 			]);
 
 			if (oid !== parentOid) {
-				entries.push(toEntry(commit));
+				entries.push(summarizeCommit(commit));
 				if (entries.length >= limit) {
 					truncated = i < commits.length - 1;
 					break outer;

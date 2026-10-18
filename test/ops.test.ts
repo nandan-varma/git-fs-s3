@@ -21,7 +21,6 @@ import {
 	getCommitLog,
 	getDiffBetweenRefs,
 	getFileContent,
-	getFileFromRef,
 	getFileHistory,
 	getLastCommitsForTree,
 	getTreeFromRef,
@@ -97,9 +96,6 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 
 		const bytes = await getFileContent(repo, "src/index.ts", "main");
 		expect(new TextDecoder().decode(bytes)).toBe("console.log(2)\n");
-
-		const display = await getFileFromRef(repo, "README.md", "main");
-		expect(display).toMatchObject({ isBinary: false, content: "# hello\n" });
 	});
 
 	it("throws GitPathNotFoundError for missing paths", async () => {
@@ -193,11 +189,20 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(page[0]?.commit.message).toBe("first\n");
 	});
 
-	it("fires the prefetch hook only at sufficient depth", async () => {
+	it("prefetches before a cache-miss commit walk, not on a cache hit", async () => {
 		const prefetch = vi.fn().mockResolvedValue(undefined);
-		await getCommitLog(repo, { ref: "main", depth: 2 }, { prefetch });
-		expect(prefetch).not.toHaveBeenCalled();
-		await getCommitLog(repo, { ref: "main", depth: 5 }, { prefetch });
+		const resultCache = memoryResultCache();
+		await getCommitLog(
+			repo,
+			{ ref: "main", depth: 2 },
+			{ prefetch, resultCache },
+		);
+		expect(prefetch).toHaveBeenCalledTimes(1);
+		await getCommitLog(
+			repo,
+			{ ref: "main", depth: 1 },
+			{ prefetch, resultCache },
+		);
 		expect(prefetch).toHaveBeenCalledTimes(1);
 	});
 
@@ -218,9 +223,8 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 	it("prefetches packs before resolving a file at a ref", async () => {
 		const prefetch = vi.fn().mockResolvedValue(undefined);
 
-		await expect(
-			getFileFromRef(repo, "README.md", "main", { prefetch }),
-		).resolves.toMatchObject({ content: "# hello\n", isBinary: false });
+		const bytes = await getFileContent(repo, "README.md", "main", { prefetch });
+		expect(new TextDecoder().decode(bytes)).toBe("# hello\n");
 		expect(prefetch).toHaveBeenCalledExactlyOnceWith();
 	});
 
@@ -527,10 +531,9 @@ describe("ops end-to-end over MemoryObjectStore", () => {
 		expect(await fastForwardMerge(repo, "feature", "main")).toBeNull();
 	});
 
-	it("rejects CAS-unsafe writes with stale parents intact", async () => {
-		// resultKeyPrefixes covers every cache kind ops write to.
+	it("resultKeyPrefixes covers every cache kind ops write to", async () => {
 		const prefixes = resultKeyPrefixes(repo.gitdir);
-		expect(prefixes).toHaveLength(5);
+		expect(prefixes).toHaveLength(4);
 		for (const prefix of prefixes) {
 			expect(prefix.endsWith(":")).toBe(true);
 			expect(prefix).toContain(repo.gitdir);

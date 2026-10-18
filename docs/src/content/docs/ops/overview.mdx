@@ -45,12 +45,10 @@ interface OpsHooks {
   /** Diagnostic sink for cache hit/miss and walk summaries. */
   onNote?(message: string): void;
   /**
-   * Called once before history walks of depth >= prefetchMinDepth — wire
-   * pack prefetching (e.g. GitFs.prefetchPacks) here.
+   * Warm every pack (e.g. GitFs.prefetchPacks) before a cache-miss read, so
+   * a sequential walk doesn't discover packs one round trip at a time.
    */
   prefetch?(): Promise<void>;
-  /** Minimum walk depth before `prefetch` fires. Default 5. */
-  prefetchMinDepth?: number;
 }
 ```
 
@@ -62,21 +60,20 @@ const hooks: OpsHooks = {
   step: perfStep,
   onNote: (msg) => console.debug(msg),
   prefetch: () => (repo.fs as GitFs).prefetchPacks(repo.gitdir),
-  prefetchMinDepth: 5,
 };
 ```
 
 ## `ResultCache`
 
-Several functions in this module — `getCommitLog`, `getTreeFromRef`,
-`getCommitHistory`, `getLastCommitsForTree`, `getFileHistory` — memoize
+Several functions in this module — `getCommitLog` (and `getCommitHistory`
+on top of it), `getTreeFromRef`, `getLastCommitsForTree`, `getFileHistory` — memoize
 expensive walk results (a commit log, a tree listing) so repeated or
 overlapping requests don't re-walk from scratch:
 
 ```typescript
 interface ResultCache {
-  get<T>(key: string): T | null | undefined;
-  set(key: string, value: unknown): void;
+  get<T extends object>(key: string): T | null | undefined;
+  set(key: string, value: object): void;
 }
 ```
 

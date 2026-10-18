@@ -1,22 +1,12 @@
-import { type CommitInfo, getCommitLog } from "./history.js";
+import {
+	type CommitSummary,
+	getCommitLog,
+	HISTORY_WALK_DEPTH,
+	summarizeCommit,
+} from "./history.js";
 import { findTreeEntry, listTreeEntries } from "./tree.js";
 import type { OpsHooks, Repo } from "./types.js";
 import { runStep } from "./types.js";
-
-export interface LastCommitInfo {
-	sha: string;
-	message: string;
-	authorName: string;
-	authorEmail: string;
-	createdAt: string;
-}
-
-/**
- * Bounds how far back the history walk looks to resolve "last commit touching
- * this path" for a directory listing. Entries whose last change is older
- * simply show no last-commit info rather than paying an unbounded scan.
- */
-const HISTORY_WALK_DEPTH = 400;
 
 /**
  * The walk itself is inherently sequential (each step needs to know what's
@@ -27,16 +17,6 @@ const HISTORY_WALK_DEPTH = 400;
  * where nearly all of this function's wall-clock time goes on object storage.
  */
 const PREFETCH_WINDOW = 24;
-
-function toLastCommitInfo(commit: CommitInfo): LastCommitInfo {
-	return {
-		sha: commit.oid,
-		message: commit.commit.message.trim(),
-		authorName: commit.commit.author.name,
-		authorEmail: commit.commit.author.email,
-		createdAt: new Date(commit.commit.author.timestamp * 1000).toISOString(),
-	};
-}
 
 /**
  * For each direct child of `treePath` (at the tip of `ref`), find the most
@@ -52,7 +32,7 @@ export async function getLastCommitsForTree(
 	repo: Repo,
 	options: { ref: string; treePath?: string; depth?: number },
 	hooks?: OpsHooks,
-): Promise<Record<string, LastCommitInfo>> {
+): Promise<Record<string, CommitSummary>> {
 	const treePath = options.treePath ?? "";
 	const depth = options.depth ?? HISTORY_WALK_DEPTH;
 	const commits = await runStep(hooks, `getCommitLog depth=${depth}`, () =>
@@ -64,7 +44,7 @@ export async function getLastCommitsForTree(
 
 	const cacheKey = `last-commits:${repo.gitdir}:${head.oid}:${treePath}`;
 	const cachedResult =
-		hooks?.resultCache?.get<Record<string, LastCommitInfo>>(cacheKey);
+		hooks?.resultCache?.get<Record<string, CommitSummary>>(cacheKey);
 	if (cachedResult) {
 		hooks?.onNote?.(
 			"getLastCommitsForTree: result-cache HIT, skipping history walk",
@@ -110,7 +90,7 @@ export async function getLastCommitsForTree(
 	// paths that callers key their file listing by.
 	const headChildren = await resolveChildren(headDirOid);
 	const remaining = new Set(headChildren.map((entry) => entry.path));
-	const result: Record<string, LastCommitInfo> = {};
+	const result: Record<string, CommitSummary> = {};
 
 	let commitsWalked = 0;
 	let prefetchWindows = 0;
@@ -175,7 +155,7 @@ export async function getLastCommitsForTree(
 
 			for (const name of remaining) {
 				if (childByName.get(name) !== parentChildByName.get(name)) {
-					result[name] = toLastCommitInfo(commit);
+					result[name] = summarizeCommit(commit);
 				}
 			}
 			for (const name of Object.keys(result)) {

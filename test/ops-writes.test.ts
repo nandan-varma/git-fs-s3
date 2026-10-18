@@ -297,3 +297,53 @@ describe("branch and merge edge cases", () => {
 		expect(await git.resolveRef({ ...repo, ref: "refs/heads/main" })).toBe(tip);
 	});
 });
+
+describe("getDiffBetweenRefs (pull request diff)", () => {
+	it("shows only the branch's changes, not base commits since the branch point", async () => {
+		const { createBranchFrom, getDiffBetweenRefs, getCommitDiff } =
+			await import("../src/ops/index.js");
+		const { repo } = await makeRepo();
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "base\n",
+			author,
+			files: [{ path: "shared.txt", content: "v1\n" }],
+		});
+		await createBranchFrom(repo, "feature", "main");
+		await commitFilesToBare(repo, {
+			branch: "feature",
+			message: "feature\n",
+			author,
+			files: [{ path: "feature.txt", content: "f\n" }],
+		});
+		// main moves on after the branch point.
+		await commitFilesToBare(repo, {
+			branch: "main",
+			message: "main moves\n",
+			author,
+			files: [{ path: "shared.txt", content: "v2\n" }],
+		});
+
+		const diff = await getDiffBetweenRefs(repo, "main", "feature");
+		expect(diff.files.map((f) => [f.path, f.status])).toEqual([
+			["feature.txt", "added"],
+		]);
+
+		// A root commit's diff adds every file, nested ones included.
+		const root = (await git.log({ ...repo, ref: "main" })).at(-1);
+		if (!root) throw new Error("no root");
+		const rootDiff = await getCommitDiff(repo, root.oid);
+		expect(rootDiff.files).toMatchObject([
+			{ path: "shared.txt", status: "added" },
+		]);
+	});
+
+	it("keeps typed errors: a missing commit is GitObjectNotFoundError", async () => {
+		const { getCommitDiff } = await import("../src/ops/index.js");
+		const { GitObjectNotFoundError } = await import("../src/index.js");
+		const { repo } = await makeRepo();
+		await expect(getCommitDiff(repo, "a".repeat(40))).rejects.toBeInstanceOf(
+			GitObjectNotFoundError,
+		);
+	});
+});

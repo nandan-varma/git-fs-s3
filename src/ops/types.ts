@@ -17,17 +17,17 @@ export interface Repo {
 
 /**
  * Key/value store for memoizing expensive walk results (commit logs, tree
- * listings, per-file history). Keys are namespaced `kind:gitdir:headSha:…`,
- * so entries self-invalidate on push (new head, new key) — but evict entries
- * under {@link resultKeyPrefixes} after rewriting a repo's storage out of
- * band, or stale walks leak until your store's own eviction.
+ * listings, per-path history). Keys are namespaced `kind:gitdir:headSha:…`,
+ * so entries self-invalidate on push (new head, new key); evict
+ * {@link resultKeyPrefixes} to drop a repo's superseded entries early.
+ * Values are always objects (arrays or records).
  */
 export interface ResultCache {
-	get<T>(key: string): T | null | undefined;
-	set(key: string, value: unknown): void;
+	get<T extends object>(key: string): T | null | undefined;
+	set(key: string, value: object): void;
 }
 
-/** Optional instrumentation and tuning hooks accepted by every op. */
+/** Optional instrumentation hooks accepted by every op. */
 export interface OpsHooks {
 	resultCache?: ResultCache;
 	/** Wrap a timed sub-step (network walk, tree listing). Default: run directly. */
@@ -35,16 +35,10 @@ export interface OpsHooks {
 	/** Diagnostic sink for cache hit/miss and walk summaries. */
 	onNote?: (message: string) => void;
 	/**
-	 * Wire pack prefetching (e.g. `GitFs.prefetchPacks`) here so a sequential
-	 * walk doesn't pay one network round trip per commit. Called once before
-	 * history walks of depth >= `prefetchMinDepth` (see below), and
-	 * unconditionally on every cache-miss tree read ({@link getTreeFromRef}) —
-	 * a tree read has no shallow case, it always needs at least the head
-	 * commit's tree object.
+	 * Warm every pack (e.g. `GitFs.prefetchPacks`) before a cache-miss read,
+	 * so a sequential walk doesn't discover packs one round trip at a time.
 	 */
 	prefetch?: () => Promise<void>;
-	/** Minimum walk depth before `prefetch` fires for history walks. Default 5. */
-	prefetchMinDepth?: number;
 }
 
 export const runStep = <T>(
@@ -56,13 +50,12 @@ export const runStep = <T>(
 /**
  * The result-cache key prefixes holding entries for `gitdir` — evict these
  * from your {@link ResultCache} when the repo's storage was rewritten outside
- * a normal push (bulk sync, rename, repack cleanup).
+ * a normal push (rename, repack).
  */
 export function resultKeyPrefixes(gitdir: string): string[] {
 	return [
 		`commitlog:${gitdir}:`,
 		`tree:${gitdir}:`,
-		`commits:${gitdir}:`,
 		`last-commits:${gitdir}:`,
 		`file-history:${gitdir}:`,
 	];

@@ -54,15 +54,6 @@ signatures.
 </ApiSignature>
 
 <ApiSignature
-	name="getFileFromRef"
-	signature="getFileFromRef(repo: Repo, filePath: string, ref: string): Promise<{ content, size, isBinary }>"
-	returns="Promise<{ content: string; size: number; isBinary: boolean }>"
->
-	`getFileContent`, decoded for display — utf8 text, or base64 when the
-	content is detected as binary (a null-byte heuristic).
-</ApiSignature>
-
-<ApiSignature
 	name="getCommit"
 	signature="getCommit(repo: Repo, sha: string): Promise<CommitInfo>"
 	returns="Promise<CommitInfo>"
@@ -121,18 +112,17 @@ pattern.
 | --- | --- |
 | `Repo` | `{ fs: IsoGitFs; gitdir: string; cache?: object }` |
 | `IsoGitFs` | The `fs` shape isomorphic-git itself accepts. |
-| `OpsHooks` | `{ resultCache?, step?, onNote?, prefetch?, prefetchMinDepth? }` |
+| `OpsHooks` | `{ resultCache?, step?, onNote?, prefetch? }` |
 | `ResultCache` | `{ get<T>(key): T \| null \| undefined; set(key, value): void }` |
 | `Branch` | `{ name: string; commit: string; isDefault: boolean }` |
 | `CommitAuthor` | `{ name, email, timestamp, timezoneOffset }` |
 | `CommitInfo` | `{ oid, commit: { message, tree, parent, author, committer }, payload }` |
 | `CommitLogOptions` | `{ ref?, depth?, knownHeadSha? }` |
 | `TreeEntry` | `{ path, mode, type: "blob" \| "tree", oid, size? }` |
-| `DiffFile` | `{ path, status, kind: "text" \| "binary" \| "too-large", additions, deletions, patch, oldPath?, oldSize?, newSize? }` |
+| `DiffFile` | `{ path, status: "added" \| "modified" \| "deleted", kind: "text" \| "binary" \| "too-large", additions, deletions, patch, oldSize?, newSize? }` |
 | `DiffResult` | `{ files: DiffFile[]; totalAdditions; totalDeletions; totalFiles }` |
-| `FileHistoryEntry` | `{ sha, message, authorName, authorEmail, createdAt }` |
-| `FileHistoryResult` | `{ entries: FileHistoryEntry[]; truncated: boolean }` |
-| `LastCommitInfo` | `{ sha, message, authorName, authorEmail, createdAt }` |
+| `CommitSummary` | `{ sha, message, authorName, authorEmail, createdAt }` — `summarizeCommit(commit)` builds one |
+| `FileHistoryResult` | `{ entries: CommitSummary[]; truncated: boolean }` |
 | `MergeAnalysis` | `{ canMerge, hasConflicts, conflictingFiles, fastForward }` |
 
 `HISTORY_WALK_DEPTH` (`= 400`) and `BANNER_WALK_DEPTH` (`= 60`) are the

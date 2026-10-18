@@ -17,10 +17,12 @@ export {
 } from "./reachability.js";
 export {
 	type ApplyReceivePackOptions,
+	type ApplyReceivePackResult,
 	applyReceivePack,
 	applyRefUpdates,
 	ensureRepoInitialized,
 	indexIncomingPack,
+	type ParsedReceivePack,
 	parseReceivePackBody,
 	type RefUpdateCommand,
 	type RefUpdateResult,
@@ -37,4 +39,8 @@ export {
 	type RawFsPromises,
 	rawFs,
 } from "./types.js";
-export { handleUploadPack, type UploadPackOptions } from "./upload-pack.js";
+export {
+	handleUploadPack,
+	parseUploadPackRequest,
+	type UploadPackOptions,
+} from "./upload-pack.js";

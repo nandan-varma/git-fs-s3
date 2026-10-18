@@ -23,27 +23,25 @@ export {
 } from "./diff.js";
 export {
 	BANNER_WALK_DEPTH,
-	type FileHistoryEntry,
 	type FileHistoryResult,
 	getFileHistory,
-	HISTORY_WALK_DEPTH,
 } from "./file-history.js";
 export {
 	type CommitInfo,
 	type CommitLogOptions,
+	type CommitSummary,
+	type GitIdentity,
 	getBlob,
 	getCommit,
 	getCommitHistory,
 	getCommitLog,
 	getFileContent,
-	getFileFromRef,
 	getTreeFromRef,
+	HISTORY_WALK_DEPTH,
 	resolveCommit,
+	summarizeCommit,
 } from "./history.js";
-export {
-	getLastCommitsForTree,
-	type LastCommitInfo,
-} from "./last-commit.js";
+export { getLastCommitsForTree } from "./last-commit.js";
 export { analyzeMerge, fastForwardMerge, type MergeAnalysis } from "./merge.js";
 export { withPackedWrites } from "./packed-writes.js";
 export {

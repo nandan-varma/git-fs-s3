@@ -120,10 +120,9 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 	signature="getCommitHistory(repo: Repo, options: { ref, limit?, skip? }, hooks?: OpsHooks): Promise<CommitInfo[]>"
 	returns="Promise<CommitInfo[]>"
 >
-	A page of commit history (`limit`/`skip`), built directly on top of
-	`getCommitLog`'s own cache for the underlying chain — a paginated commit
-	list view doesn't re-walk anything `getCommitLog` already walked for a
-	different page size.
+	A page of commit history (`limit`/`skip`): a slice of `getCommitLog`'s
+	memoized walk, so paging never re-walks what an earlier page already
+	walked. `[]` when the ref doesn't exist.
 </ApiSignature>
 
 ## File history & last-commits-per-directory
@@ -143,7 +142,7 @@ import ApiSignature from '../../../components/ApiSignature.astro';
 <ApiSignature
 	name="getLastCommitsForTree"
 	signature="getLastCommitsForTree(repo: Repo, options: { ref, treePath?, depth? }, hooks?: OpsHooks): Promise<Record<string, LastCommitInfo>>"
-	returns="Promise<Record<string, LastCommitInfo>>"
+	returns="Promise<Record<string, CommitSummary>>"
 >
 	For each direct child of `treePath`, the most recent commit that changed
 	it — the tree-view "last commit" column GitHub-style UIs show next to
@@ -178,8 +177,10 @@ directory listings on large repos.
 	signature="getDiffBetweenRefs(repo: Repo, baseRef: string, compareRef: string): Promise<DiffResult>"
 	returns="Promise<DiffResult>"
 >
-	The diff between two refs (branch names or commit shas — both are
-	accepted). `DiffResult` is `{ files: DiffFile[], totalAdditions,
+	What `compareRef` changed since it diverged from `baseRef` — a pull
+	request's diff, git's three-dot `base...compare`: compared against their
+	merge base, so commits that landed on `baseRef` after the branch point
+	don't show up as reverts. Branch names or commit shas are accepted. `DiffResult` is `{ files: DiffFile[], totalAdditions,
 	totalDeletions, totalFiles }`; each `DiffFile` carries a git-style
 	unified patch (`diff --git a/... b/...` header, no leaking `diff`
 	package internals like an `Index:`/`===` block) when `kind` is `"text"`.

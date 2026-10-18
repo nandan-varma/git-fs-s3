@@ -22,9 +22,6 @@ export const enoent = (syscall: string, path: string) =>
 export const enotdir = (syscall: string, path: string) =>
 	new FsError("ENOTDIR", syscall, path);
 
-export const eisdir = (syscall: string, path: string) =>
-	new FsError("EISDIR", syscall, path);
-
 export const enotempty = (syscall: string, path: string) =>
 	new FsError("ENOTEMPTY", syscall, path);
 
