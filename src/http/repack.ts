@@ -7,64 +7,22 @@
  */
 
 import git from "isomorphic-git";
-import { concat, deflate, encodeUtf8, fromHex, sha1 } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
 import {
 	type PackFileName,
 	packFileName,
 	parsePackDirectory,
 } from "../pack-files.js";
+import {
+	encodePack,
+	hashGitObject,
+	type PackObject,
+	type PackObjectType,
+	packBaseName,
+} from "../pack-write.js";
 import { buildPackFromExistingPacks } from "./pack-reuse.js";
 import { collectReachableOids } from "./reachability.js";
 import { type HttpHooks, rawFs } from "./types.js";
-
-type PackObjectType = "commit" | "tree" | "blob" | "tag";
-
-// Git pack object type bits (bits 6-4 of the header's first byte) — same
-// constants real git and isomorphic-git's own (de)serializers use.
-const PACK_OBJECT_TYPE_BITS: Record<PackObjectType, number> = {
-	commit: 0b0010000,
-	tree: 0b0100000,
-	blob: 0b0110000,
-	tag: 0b1000000,
-};
-
-// Git's pack object header: first byte packs (continuation bit | 3-bit type |
-// low 4 bits of length); any remaining length is emitted 7 bits at a time,
-// each with its own continuation bit, little-endian.
-function encodePackObjectHeader(
-	type: PackObjectType,
-	length: number,
-): Uint8Array {
-	const bytes: number[] = [];
-	let more = length > 0b1111;
-	bytes.push(
-		(more ? 0b10000000 : 0) | PACK_OBJECT_TYPE_BITS[type] | (length & 0b1111),
-	);
-	length >>>= 4;
-	while (more) {
-		more = length > 0b01111111;
-		bytes.push((more ? 0b10000000 : 0) | (length & 0b01111111));
-		length >>>= 7;
-	}
-	return new Uint8Array(bytes);
-}
-
-// Git's object hash: sha1("<type> <byte length>\0<content>") — matches
-// isomorphic-git's internal GitObject.wrap + shasum, computed independently
-// here rather than trusted from isomorphic-git's own read path.
-async function hashGitObject(
-	type: string,
-	content: Uint8Array,
-): Promise<string> {
-	const prefix = encodeUtf8(`${type} ${content.length}\0`);
-	return sha1(concat(prefix, content));
-}
-
-type VerifiedObject = {
-	type: PackObjectType;
-	content: Uint8Array<ArrayBuffer>;
-};
 
 /**
  * Read every reachable object and independently re-derive its oid from the
@@ -76,8 +34,8 @@ type VerifiedObject = {
 async function readAndVerifyObjects(
 	repo: Repo,
 	oids: string[],
-): Promise<Map<string, VerifiedObject>> {
-	const objects = new Map<string, VerifiedObject>();
+): Promise<Map<string, PackObject>> {
+	const objects = new Map<string, PackObject>();
 	const BATCH_SIZE = 100;
 	for (let i = 0; i < oids.length; i += BATCH_SIZE) {
 		const batch = oids.slice(i, i + BATCH_SIZE);
@@ -106,53 +64,6 @@ async function readAndVerifyObjects(
 		}
 	}
 	return objects;
-}
-
-/**
- * Serialize verified objects into a pack containing only full (never
- * deltified) entries, in the given oid order.
- */
-async function buildVerifiedPack(
-	oids: string[],
-	objects: Map<string, VerifiedObject>,
-): Promise<Uint8Array> {
-	// PACK header: "PACK" + version(2) + count, all big-endian uint32
-	const header = new Uint8Array(12);
-	const view = new DataView(header.buffer);
-	header.set(encodeUtf8("PACK"), 0);
-	view.setUint32(4, 2, false); // version 2
-	view.setUint32(8, oids.length, false); // object count
-
-	const chunks: Uint8Array[] = [header];
-
-	const BATCH_SIZE = 100;
-	for (let i = 0; i < oids.length; i += BATCH_SIZE) {
-		const batch = oids.slice(i, i + BATCH_SIZE);
-		const encoded = await Promise.all(
-			batch.map(async (oid) => {
-				const entry = objects.get(oid);
-				if (!entry) {
-					throw new Error(`repack: missing verified object for ${oid}`);
-				}
-				const objHeader = encodePackObjectHeader(
-					entry.type,
-					entry.content.length,
-				);
-				const compressed = await deflate(entry.content);
-				return concat(objHeader, compressed);
-			}),
-		);
-		chunks.push(...encoded);
-	}
-
-	// Git's pack trailer is the SHA-1 of every preceding byte (header +
-	// every object entry) as a single digest — NOT an incremental/chained
-	// hash. Web Crypto's subtle.digest has no streaming mode, so unlike
-	// Node's crypto.createHash this can't be folded into the loop above;
-	// everything is already buffered in `chunks`, so hash it in one pass.
-	const packBody = concat(...chunks);
-	const trailer = fromHex(await sha1(packBody));
-	return concat(packBody, trailer);
 }
 
 /**
@@ -212,10 +123,16 @@ export async function repackRepository(
 		).filter((oid): oid is string => oid !== null);
 		if (tipOids.length === 0) return [];
 
+		// Blobs aren't read here: indexPack below re-hashes every object the
+		// new pack holds and the reachable-set check rejects a pack missing any,
+		// so inflating every blob in history during the walk too would only
+		// double the cost.
 		const { oids: reachable, complete } = await collectReachableOids(
 			repo,
 			tipOids,
 			hooks,
+			undefined,
+			{ verifyBlobs: false },
 		);
 		if (!complete || reachable.length === 0) return [];
 
@@ -225,14 +142,27 @@ export async function repackRepository(
 		// fall back to a verified, non-deltified rebuild.
 		const packBuffer =
 			(await buildPackFromExistingPacks(repo, reachable)) ??
-			(await buildVerifiedPack(
-				reachable,
-				await readAndVerifyObjects(repo, reachable),
-			));
+			(await (async () => {
+				const objects = await readAndVerifyObjects(repo, reachable);
+				return encodePack(
+					reachable.map((oid) => {
+						const object = objects.get(oid);
+						if (!object) {
+							throw new Error(`repack: missing verified object for ${oid}`);
+						}
+						return object;
+					}),
+				);
+			})());
 
 		await fsp.mkdir(packDir, { recursive: true });
-		const newBase = `pack-${Date.now()}`;
+		const newBase = packBaseName(packBuffer);
 		const newPackFile = packFileName(newBase, "pack");
+		// Checksum-named, so an identical pack may already be stored — never
+		// delete that one on the abort path below.
+		const preexisting = (await readPackDirectory(repo)).some(
+			(file) => file.base === newBase,
+		);
 		await fsp.writeFile(`${packDir}/${newPackFile}`, packBuffer);
 
 		const { oids: indexedOids } = await git.indexPack({
@@ -245,13 +175,14 @@ export async function repackRepository(
 		// the content. Reused packs may carry extra delta bases: superset is fine.
 		const indexed = new Set(indexedOids);
 		if (reachable.some((oid) => !indexed.has(oid))) {
-			await Promise.all(
-				(["pack", "idx"] as const).map((kind) =>
-					fsp
-						.unlink(`${packDir}/${packFileName(newBase, kind)}`)
-						.catch(() => {}),
-				),
-			);
+			if (!preexisting)
+				await Promise.all(
+					(["pack", "idx"] as const).map((kind) =>
+						fsp
+							.unlink(`${packDir}/${packFileName(newBase, kind)}`)
+							.catch(() => {}),
+					),
+				);
 			throw new Error(
 				"repack: indexed pack is missing reachable objects — aborting",
 			);
@@ -260,11 +191,16 @@ export async function repackRepository(
 		const stale = (await readPackDirectory(repo)).filter(
 			(file) => file.base !== newBase,
 		);
-		await Promise.all(
-			stale.map((file) =>
-				fsp.unlink(`${packDir}/${file.name}`).catch(() => {}),
-			),
-		);
+		// Indexes first: readers find packs through their .idx, so a reader
+		// listing mid-cleanup sees either a complete old pack or none of it.
+		const unlinkAll = (files: PackFileName[]) =>
+			Promise.all(
+				files.map((file) =>
+					fsp.unlink(`${packDir}/${file.name}`).catch(() => {}),
+				),
+			);
+		await unlinkAll(stale.filter((file) => file.kind === "idx"));
+		await unlinkAll(stale.filter((file) => file.kind !== "idx"));
 		return stale.map((file) => `objects/pack/${file.name}`);
 	} catch (err) {
 		hooks?.onWarn?.("repack failed (non-fatal)", err);

@@ -45,6 +45,7 @@ export {
 	type LastCommitInfo,
 } from "./last-commit.js";
 export { analyzeMerge, fastForwardMerge, type MergeAnalysis } from "./merge.js";
+export { withPackedWrites } from "./packed-writes.js";
 export {
 	deleteFromTree,
 	findTreeEntry,

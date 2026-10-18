@@ -1,13 +1,15 @@
 import git from "isomorphic-git";
 import { concat, decodeAscii, decodeUtf8 } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
+import { storePack } from "../pack-write.js";
 import { isSafeFullRefName } from "../refs.js";
-import { FLUSH, pktLine } from "./pkt-line.js";
+import { FLUSH, pktLine, sideBandPackfile } from "./pkt-line.js";
 import { collectReachableOids } from "./reachability.js";
 import { type RepackOptions, repackRepository } from "./repack.js";
 import { type GitHttpResult, type HttpHooks, rawFs, runStep } from "./types.js";
 
 const ZERO_OID = "0".repeat(40);
+const OID_RE = /^[0-9a-f]{40}$/;
 
 export interface RefUpdateCommand {
 	oldOid: string;
@@ -21,12 +23,21 @@ export interface RefUpdateResult {
 	reason?: string;
 }
 
-/** Split a receive-pack body: pkt-line ref commands, flush, then raw PACK. */
-export function parseReceivePackBody(body: Uint8Array): {
+export interface ParsedReceivePack {
 	refUpdates: RefUpdateCommand[];
 	packData: Uint8Array;
-} {
+	/** Capabilities the client asked for on its first command line. */
+	capabilities: string[];
+}
+
+/**
+ * Split a receive-pack body: pkt-line ref commands, flush, then raw PACK.
+ * A command whose oids aren't 40 lowercase hex digits is dropped — it can
+ * never be applied, and its oids would otherwise reach object-path lookups.
+ */
+export function parseReceivePackBody(body: Uint8Array): ParsedReceivePack {
 	const refUpdates: RefUpdateCommand[] = [];
+	let capabilities: string[] | undefined;
 	let pos = 0;
 	while (pos + 4 <= body.length) {
 		const len = Number.parseInt(decodeAscii(body.subarray(pos, pos + 4)), 16);
@@ -35,18 +46,30 @@ export function parseReceivePackBody(body: Uint8Array): {
 			break; // flush = end of ref update commands
 		}
 		if (len < 4) break;
-		// Strip NUL-separated capabilities from the first command line
-		const line = decodeUtf8(body.subarray(pos + 4, pos + len))
+		// The first command line carries NUL-separated capabilities.
+		const [line, caps] = decodeUtf8(body.subarray(pos + 4, pos + len))
 			.replace(/\n$/, "")
-			.split("\0")[0];
+			.split("\0");
+		if (capabilities === undefined) {
+			capabilities = (caps ?? "").split(" ").filter(Boolean);
+		}
 		pos += len;
-		const parts = (line ?? "").split(" ");
-		const [oldOid, newOid, refName] = parts;
-		if (oldOid && newOid && refName) {
+		const [oldOid, newOid, refName] = (line ?? "").split(" ");
+		if (
+			oldOid &&
+			newOid &&
+			refName &&
+			OID_RE.test(oldOid) &&
+			OID_RE.test(newOid)
+		) {
 			refUpdates.push({ oldOid, newOid, refName });
 		}
 	}
-	return { refUpdates, packData: body.subarray(pos) };
+	return {
+		refUpdates,
+		packData: body.subarray(pos),
+		capabilities: capabilities ?? [],
+	};
 }
 
 /** Initialize the repo when its HEAD doesn't exist yet (first push). */
@@ -74,19 +97,9 @@ export async function indexIncomingPack(
 		hooks,
 		"write + indexPack incoming pack",
 		async () => {
-			const fsp = rawFs(repo);
-			const packDir = `${repo.gitdir}/objects/pack`;
-			await fsp.mkdir(packDir, { recursive: true });
-
-			const packName = `recv-${Date.now()}`;
-			await fsp.writeFile(`${packDir}/${packName}.pack`, packData);
-
-			await git.indexPack({
-				...repo,
-				dir: packDir,
-				filepath: `${packName}.pack`,
-			});
-			return packName;
+			// Named by checksum (`pack-<sha>`), stored pack first, index last.
+			const { base } = await storePack(repo, packData);
+			return base;
 		},
 	);
 	return [
@@ -142,15 +155,40 @@ async function collectExistingRefTips(repo: Repo): Promise<Set<string>> {
 	return new Set(oids.filter((oid): oid is string => oid !== null));
 }
 
+/** The branch HEAD names, or null when HEAD is detached/unreadable. */
+async function currentBranchRef(repo: Repo): Promise<string | null> {
+	return git
+		.currentBranch({ ...repo, fullname: true })
+		.then((ref) => ref ?? null)
+		.catch(() => null);
+}
+
 async function validateRefUpdates(
 	repo: Repo,
 	refUpdates: RefUpdateCommand[],
 ): Promise<RefUpdateResult[]> {
+	const headRef = await currentBranchRef(repo);
+	const seen = new Set<string>();
 	return Promise.all(
-		refUpdates.map(
-			async ({ oldOid, refName }) =>
-				(await checkRefCas(repo, refName, oldOid)) ?? { refName, ok: true },
-		),
+		refUpdates.map(async ({ oldOid, newOid, refName }) => {
+			// Two commands for one ref can't both be compare-and-swapped.
+			if (seen.has(refName)) {
+				return { refName, ok: false, reason: "duplicate ref update" };
+			}
+			seen.add(refName);
+			// Same rule as git's receive.denyDeleteCurrent: deleting the
+			// branch HEAD names leaves every clone without a default branch.
+			if (newOid === ZERO_OID && refName === headRef) {
+				return {
+					refName,
+					ok: false,
+					reason: "deletion of the current branch prohibited",
+				};
+			}
+			return (
+				(await checkRefCas(repo, refName, oldOid)) ?? { refName, ok: true }
+			);
+		}),
 	);
 }
 
@@ -173,6 +211,19 @@ export async function applyRefUpdates(
 				if (newOid === ZERO_OID) {
 					await git.deleteRef({ ...repo, ref: refName }).catch(() => {});
 				} else {
+					// A branch must name a commit; a tag may name anything.
+					if (refName.startsWith("refs/heads/")) {
+						const { type } = await git
+							.readObject({ ...repo, oid: newOid, format: "content" })
+							.catch(() => ({ type: "missing" }));
+						if (type !== "commit") {
+							return {
+								refName,
+								ok: false,
+								reason: `branch must point at a commit, not a ${type}`,
+							};
+						}
+					}
 					await git.writeRef({
 						...repo,
 						ref: refName,
@@ -186,15 +237,35 @@ export async function applyRefUpdates(
 	);
 }
 
-/** The report-status response body for a set of ref-update results. */
-export function receivePackResponse(results: RefUpdateResult[]): GitHttpResult {
-	const responseBody = concat(
-		pktLine("unpack ok\n"),
-		...results.map(({ refName, ok, reason }) =>
-			pktLine(ok ? `ok ${refName}\n` : `ng ${refName} ${reason}\n`),
-		),
-		FLUSH,
-	);
+/**
+ * The report-status response for a set of ref-update results — empty unless
+ * the client asked for `report-status`, and side-band-64k framed when it
+ * asked for that (git and isomorphic-git both do; isomorphic-git always
+ * demuxes the response as side-band). `unpackError` reports a pack that
+ * couldn't be stored or indexed.
+ */
+export function receivePackResponse(
+	results: RefUpdateResult[],
+	options?: { capabilities?: readonly string[]; unpackError?: string },
+): GitHttpResult {
+	const capabilities = options?.capabilities ?? ["report-status"];
+	const report = capabilities.includes("report-status")
+		? concat(
+				pktLine(
+					options?.unpackError
+						? `unpack ${options.unpackError}\n`
+						: "unpack ok\n",
+				),
+				...results.map(({ refName, ok, reason }) =>
+					pktLine(ok ? `ok ${refName}\n` : `ng ${refName} ${reason}\n`),
+				),
+				FLUSH,
+			)
+		: new Uint8Array();
+	const responseBody =
+		capabilities.includes("side-band-64k") && report.length > 0
+			? sideBandPackfile(report)
+			: report;
 
 	return {
 		status: 200,
@@ -225,24 +296,53 @@ export interface ApplyReceivePackOptions {
  * per-repo lock); build the HTTP response afterwards with
  * {@link receivePackResponse}.
  */
+export interface ApplyReceivePackResult {
+	results: RefUpdateResult[];
+	stalePackPaths: string[];
+	/** Set when the incoming pack couldn't be stored or indexed. */
+	unpackError?: string;
+}
+
 export async function applyReceivePack(
 	repo: Repo,
 	parsed: { refUpdates: RefUpdateCommand[]; packData: Uint8Array },
 	options: ApplyReceivePackOptions,
 	hooks?: HttpHooks,
-): Promise<{ results: RefUpdateResult[]; stalePackPaths: string[] }> {
+): Promise<ApplyReceivePackResult> {
 	await ensureRepoInitialized(repo, options.defaultBranch);
 	const preflight = await validateRefUpdates(repo, parsed.refUpdates);
 	const acceptedUpdates = parsed.refUpdates.filter(
 		(_, index) => preflight[index]?.ok,
 	);
-	const incomingPackPaths = await indexIncomingPack(
-		repo,
-		acceptedUpdates.some((update) => update.newOid !== ZERO_OID)
-			? parsed.packData
-			: new Uint8Array(),
-		hooks,
+	const fsp = rawFs(repo);
+	const packDir = `${repo.gitdir}/objects/pack`;
+	const existingPacks = new Set(
+		await fsp.readdir(packDir).catch(() => [] as string[]),
 	);
+	let incomingPackPaths: string[];
+	try {
+		incomingPackPaths = await indexIncomingPack(
+			repo,
+			acceptedUpdates.some((update) => update.newOid !== ZERO_OID)
+				? parsed.packData
+				: new Uint8Array(),
+			hooks,
+		);
+	} catch (err) {
+		hooks?.onWarn?.("receive-pack: incoming pack rejected", err);
+		return {
+			results: preflight.map((result) =>
+				result.ok ? { ...result, ok: false, reason: "unpacker error" } : result,
+			),
+			stalePackPaths: [],
+			unpackError: "index-pack failed",
+		};
+	}
+	// A checksum-named pack identical to one already stored must survive the
+	// cleanup below. Index first, so readers never see a half-removed pack.
+	const removableIncoming = incomingPackPaths
+		.filter((path) => !existingPacks.has(path.slice(packDir.length + 1)))
+		.sort((a, b) => Number(b.endsWith(".idx")) - Number(a.endsWith(".idx")));
 
 	const newTips = acceptedUpdates
 		.filter((update) => update.newOid !== ZERO_OID)
@@ -265,13 +365,9 @@ export async function applyReceivePack(
 			haveOids,
 		);
 		if (!complete) {
-			await Promise.all(
-				incomingPackPaths.map((filepath) =>
-					rawFs(repo)
-						.unlink(filepath)
-						.catch(() => {}),
-				),
-			);
+			for (const filepath of removableIncoming) {
+				await fsp.unlink(filepath).catch(() => {});
+			}
 			return {
 				results: preflight.map((result) =>
 					result.ok

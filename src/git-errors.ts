@@ -131,6 +131,20 @@ export function formatErrorResponse(error: unknown): {
 		};
 	}
 
+	// The object store's circuit breaker is open (retry.ts's CircuitOpenError):
+	// the backend is down, not this request — tell clients when to retry.
+	if ((error as { code?: unknown } | null)?.code === "EUNAVAILABLE") {
+		return {
+			status: 503,
+			body: {
+				error: "ServiceUnavailable",
+				message: "Storage is temporarily unavailable",
+				retryable: true,
+			},
+			headers: { "Retry-After": "30" },
+		};
+	}
+
 	if (error instanceof Error) {
 		return {
 			status: 500,

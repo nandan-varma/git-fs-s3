@@ -6,6 +6,7 @@ import {
 	parseReceivePackBody,
 	receivePackResponse,
 } from "../../src/http/receive-pack.js";
+import { rawFs } from "../../src/http/types.js";
 import { createGitFs, MemoryObjectStore } from "../../src/index.js";
 import {
 	authorNow,
@@ -303,7 +304,9 @@ describe("applyReceivePack", () => {
 					packfile,
 				),
 			),
-			{ defaultBranch: "main" },
+			// Seeding committed one pack per commit, so a repack would run its
+			// own whole-repo walk; this measures validation alone.
+			{ defaultBranch: "main", repack: false },
 		);
 
 		expect(results).toEqual([{ refName: "refs/heads/main", ok: true }]);
@@ -362,7 +365,9 @@ describe("applyReceivePack", () => {
 					packfile,
 				),
 			),
-			{ defaultBranch: "main" },
+			// Seeding committed one pack per commit, so a repack would run its
+			// own whole-repo walk; this measures validation alone.
+			{ defaultBranch: "main", repack: false },
 		);
 
 		expect(results).toEqual([{ refName: "refs/heads/pr-branch", ok: true }]);
@@ -525,3 +530,180 @@ function concatBuffers(...parts: Uint8Array[]): Uint8Array {
 	}
 	return out;
 }
+
+describe("receive-pack — protocol edge cases", () => {
+	async function initRepo(): Promise<Repo> {
+		const repo = makeRepo();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+		return repo;
+	}
+
+	function body(commands: string[], pack?: Uint8Array): Uint8Array {
+		return concatBuffers(
+			...commands.map((command) => pktLine(command)),
+			new TextEncoder().encode("0000"),
+			...(pack ? [pack] : []),
+		);
+	}
+
+	it("parses the client's capabilities and drops commands with malformed oids", () => {
+		const parsed = parseReceivePackBody(
+			body([
+				`${ZERO_OID} ${"a".repeat(40)} refs/heads/main\0report-status side-band-64k\n`,
+				`${ZERO_OID} not-an-oid refs/heads/bad\n`,
+			]),
+		);
+		expect(parsed.capabilities).toEqual(["report-status", "side-band-64k"]);
+		expect(parsed.refUpdates.map((u) => u.refName)).toEqual([
+			"refs/heads/main",
+		]);
+	});
+
+	it("frames the report in side-band-64k when the client asked for it", () => {
+		const response = receivePackResponse(
+			[{ refName: "refs/heads/main", ok: true }],
+			{
+				capabilities: ["report-status", "side-band-64k"],
+			},
+		);
+		const bytes = response.body;
+		// pkt-line header, then band 1, then the inner report-status pkt-lines.
+		expect(bytes[4]).toBe(1);
+		const inner = new TextDecoder().decode(bytes.subarray(5));
+		expect(inner).toContain("unpack ok");
+		expect(inner).toContain("ok refs/heads/main");
+	});
+
+	it("sends no report when the client didn't ask for report-status", () => {
+		const response = receivePackResponse(
+			[{ refName: "refs/heads/main", ok: true }],
+			{
+				capabilities: [],
+			},
+		);
+		expect(response.body.length).toBe(0);
+	});
+
+	it("reports an unindexable pack as an unpack error, not a crash", async () => {
+		const repo = await initRepo();
+		const garbage = new TextEncoder().encode("PACK this is not a pack");
+		const outcome = await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				body([`${ZERO_OID} ${"b".repeat(40)} refs/heads/main\n`], garbage),
+			),
+			{ defaultBranch: "main", repack: false },
+		);
+		expect(outcome.unpackError).toBe("index-pack failed");
+		expect(outcome.results).toEqual([
+			{ refName: "refs/heads/main", ok: false, reason: "unpacker error" },
+		]);
+	});
+
+	it("refuses a branch pointing at a non-commit", async () => {
+		const repo = await initRepo();
+		const staging = await initRepo();
+		const { packfile, commitOid } = await buildPushPack(
+			staging,
+			undefined,
+			"c",
+		);
+		const { commit } = await git.readCommit({ ...staging, oid: commitOid });
+		const outcome = await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				body(
+					[
+						`${ZERO_OID} ${commitOid} refs/heads/main\n`,
+						`${ZERO_OID} ${commit.tree} refs/heads/tree-branch\n`,
+					],
+					packfile,
+				),
+			),
+			{ defaultBranch: "main", repack: false },
+		);
+		expect(outcome.results[0]).toEqual({
+			refName: "refs/heads/main",
+			ok: true,
+		});
+		expect(outcome.results[1]).toMatchObject({ ok: false });
+		expect(outcome.results[1]?.reason).toContain("must point at a commit");
+	});
+
+	it("refuses to delete the branch HEAD points to", async () => {
+		const repo = makeRepo();
+		await git.init({
+			...repo,
+			dir: repo.gitdir,
+			bare: true,
+			defaultBranch: "main",
+		});
+		const tip = await commitFilesToBare(repo, {
+			branch: "main",
+			message: "m\n",
+			author,
+			files: [{ path: "f", content: "f\n" }],
+		});
+		const outcome = await applyReceivePack(
+			repo,
+			parseReceivePackBody(body([`${tip} ${ZERO_OID} refs/heads/main\n`])),
+			{ defaultBranch: "main", repack: false },
+		);
+		expect(outcome.results[0]?.reason).toBe(
+			"deletion of the current branch prohibited",
+		);
+		expect(await git.resolveRef({ ...repo, ref: "refs/heads/main" })).toBe(tip);
+	});
+
+	it("rejects two commands for the same ref", async () => {
+		const repo = await initRepo();
+		const staging = await initRepo();
+		const { packfile, commitOid } = await buildPushPack(
+			staging,
+			undefined,
+			"c",
+		);
+		const outcome = await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				body(
+					[
+						`${ZERO_OID} ${commitOid} refs/heads/x\n`,
+						`${ZERO_OID} ${commitOid} refs/heads/x\n`,
+					],
+					packfile,
+				),
+			),
+			{ defaultBranch: "main", repack: false },
+		);
+		expect(outcome.results[1]).toEqual({
+			refName: "refs/heads/x",
+			ok: false,
+			reason: "duplicate ref update",
+		});
+	});
+
+	it("names the stored pack by its checksum", async () => {
+		const repo = await initRepo();
+		const staging = await initRepo();
+		const { packfile, commitOid } = await buildPushPack(
+			staging,
+			undefined,
+			"c",
+		);
+		await applyReceivePack(
+			repo,
+			parseReceivePackBody(
+				body([`${ZERO_OID} ${commitOid} refs/heads/main\n`], packfile),
+			),
+			{ defaultBranch: "main", repack: false },
+		);
+		const names = await rawFs(repo).readdir("git/objects/pack");
+		expect(names.some((n) => /^pack-[0-9a-f]{40}\.pack$/.test(n))).toBe(true);
+	});
+});

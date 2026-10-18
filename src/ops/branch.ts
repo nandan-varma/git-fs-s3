@@ -1,5 +1,5 @@
 import git from "isomorphic-git";
-import { GitInvalidRequestError } from "../git-errors.js";
+import { GitConflictError, GitInvalidRequestError } from "../git-errors.js";
 import { isSafeBranchName } from "../refs.js";
 import type { Repo } from "./types.js";
 
@@ -201,7 +201,14 @@ export async function createBranchFrom(
 	assertSafeBranchName(name);
 	assertSafeBranchName(startPoint);
 	const object = await resolveLooseRefFast(repo, `refs/heads/${startPoint}`);
-	await git.branch({ ...repo, ref: name, checkout: false, object });
+	try {
+		await git.branch({ ...repo, ref: name, checkout: false, object });
+	} catch (err) {
+		if ((err as { code?: string }).code === "AlreadyExistsError") {
+			throw new GitConflictError(`Branch ${name} already exists`);
+		}
+		throw err;
+	}
 }
 
 /** Delete a branch ref (validated — deleteBranch has no internal ref check). */
@@ -210,6 +217,16 @@ export async function deleteBranchByName(
 	name: string,
 ): Promise<void> {
 	assertSafeBranchName(name);
+	// Same rule as receive-pack: deleting the branch HEAD names leaves every
+	// clone without a default branch.
+	const current =
+		(await getCurrentLooseBranch(repo)) ??
+		(await git.currentBranch({ ...repo, fullname: false }).catch(() => null));
+	if (current === name) {
+		throw new GitInvalidRequestError(
+			`Cannot delete ${name}: it is the default branch`,
+		);
+	}
 	await git.deleteBranch({ ...repo, ref: name });
 }
 

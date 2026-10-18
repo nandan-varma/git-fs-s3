@@ -113,3 +113,57 @@ export async function collectReachableOids(
 	await Promise.all(startOids.map((oid) => visit(oid)));
 	return { oids: Array.from(seen), complete };
 }
+
+/**
+ * Commit-only ancestry walk: every commit reachable from `startOids`
+ * (annotated tags peeled), stopping at — and not descending into — commits in
+ * `stopAt`. Reads commit objects only, never trees or blobs, so it costs a
+ * fraction of {@link collectReachableOids} over the same history. Start oids
+ * that don't exist (or aren't commits/tags) are skipped. Returns the commits
+ * walked and the `stopAt` commits the walk ran into.
+ */
+export async function collectCommitAncestry(
+	repo: Repo,
+	startOids: readonly string[],
+	stopAt?: ReadonlySet<string>,
+): Promise<{ commits: Set<string>; boundary: Set<string> }> {
+	const commits = new Set<string>();
+	const boundary = new Set<string>();
+	const queued = new Set<string>();
+	let frontier = [...new Set(startOids)];
+	const BATCH = 50;
+	while (frontier.length > 0) {
+		const next: string[] = [];
+		for (let i = 0; i < frontier.length; i += BATCH) {
+			await Promise.all(
+				frontier.slice(i, i + BATCH).map(async (oid) => {
+					if (stopAt?.has(oid)) {
+						boundary.add(oid);
+						return;
+					}
+					const object = await git
+						.readObject({ ...repo, oid })
+						.catch(() => null);
+					if (object?.type === "tag") {
+						const target = (object.object as { object: string }).object;
+						if (!queued.has(target)) {
+							queued.add(target);
+							next.push(target);
+						}
+						return;
+					}
+					if (object?.type !== "commit") return;
+					commits.add(oid);
+					for (const parent of (object.object as { parent: string[] }).parent) {
+						if (!queued.has(parent)) {
+							queued.add(parent);
+							next.push(parent);
+						}
+					}
+				}),
+			);
+		}
+		frontier = next;
+	}
+	return { commits, boundary };
+}

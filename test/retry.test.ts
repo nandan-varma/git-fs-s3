@@ -177,3 +177,89 @@ describe("createRetryStore", () => {
 		expect(await retried.head("a/b")).toBeNull();
 	});
 });
+
+describe("createRetryStore — breaker accounting", () => {
+	it("a success resets the failure count (only consecutive failures open it)", async () => {
+		const inner = new MemoryObjectStore();
+		let fail = false;
+		const store: ObjectStore = {
+			...inner,
+			get: async (key) => {
+				if (fail) throw transientError();
+				return inner.get(key);
+			},
+			put: (k, d) => inner.put(k, d),
+			delete: (k) => inner.delete(k),
+			head: (k) => inner.head(k),
+			list: (p, o) => inner.list(p, o),
+		};
+		const retried = createRetryStore(store, {
+			retries: 0,
+			breaker: { threshold: 3, resetMs: 60_000 },
+		});
+		for (let round = 0; round < 5; round++) {
+			fail = true;
+			await retried.get("k").catch(() => {});
+			await retried.get("k").catch(() => {});
+			fail = false;
+			await expect(retried.get("k")).resolves.toBeNull();
+		}
+	});
+
+	it("non-retryable errors never open the circuit", async () => {
+		const { store } = flakyStore(Number.POSITIVE_INFINITY, fatalError);
+		const retried = createRetryStore(store, {
+			retries: 0,
+			breaker: { threshold: 2, resetMs: 60_000 },
+		});
+		for (let i = 0; i < 5; i++) {
+			const error = await retried.get("k").catch((e: unknown) => e);
+			expect(error).not.toBeInstanceOf(CircuitOpenError);
+		}
+	});
+
+	it("half-open lets exactly one probe through", async () => {
+		vi.useFakeTimers();
+		let release: () => void = () => {};
+		let calls = 0;
+		let failing = true;
+		const inner = new MemoryObjectStore();
+		const store: ObjectStore = {
+			get: async (key) => {
+				calls++;
+				if (failing) throw transientError();
+				await new Promise<void>((r) => {
+					release = r;
+				});
+				return inner.get(key);
+			},
+			put: (k, d) => inner.put(k, d),
+			delete: (k) => inner.delete(k),
+			head: (k) => inner.head(k),
+			list: (p, o) => inner.list(p, o),
+		};
+		const retried = createRetryStore(store, {
+			retries: 0,
+			breaker: { threshold: 1, resetMs: 1000 },
+		});
+		await retried.get("k").catch(() => {});
+		vi.advanceTimersByTime(1500);
+		failing = false;
+		calls = 0;
+		const probe = retried.get("k");
+		const second = await retried.get("k").catch((e: unknown) => e);
+		expect(second).toBeInstanceOf(CircuitOpenError);
+		release();
+		await expect(probe).resolves.toBeNull();
+		expect(calls).toBe(1);
+	});
+});
+
+describe("formatErrorResponse — open circuit", () => {
+	it("maps CircuitOpenError to a retryable 503", async () => {
+		const { formatErrorResponse } = await import("../src/index.js");
+		const response = formatErrorResponse(new CircuitOpenError());
+		expect(response.status).toBe(503);
+		expect(response.headers?.["Retry-After"]).toBe("30");
+	});
+});

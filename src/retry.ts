@@ -107,27 +107,47 @@ export function createRetryStore(
 	let failures = 0;
 	let lastFailureAt = 0;
 	let state: "closed" | "open" | "half-open" = "closed";
+	let probing = false;
 
+	/**
+	 * Consecutive transient failures open the circuit; any success closes it
+	 * and resets the count. Non-retryable errors (a 403, a malformed request)
+	 * say nothing about the backend's health and never count. Once the reset
+	 * window passes, exactly one request probes the backend (half-open);
+	 * everything else keeps failing fast until that probe settles.
+	 */
 	async function guarded<T>(fn: () => Promise<T>): Promise<T> {
 		if (breaker === null) return fn();
-		if (state === "open") {
-			if (Date.now() - lastFailureAt < breaker.resetMs) {
+		let isProbe = false;
+		if (state !== "closed") {
+			if (
+				probing ||
+				(state === "open" && Date.now() - lastFailureAt < breaker.resetMs)
+			) {
 				throw new CircuitOpenError();
 			}
 			state = "half-open";
+			probing = true;
+			isProbe = true;
 		}
 		try {
 			const result = await fn();
-			if (state === "half-open") {
-				state = "closed";
-				failures = 0;
-			}
+			failures = 0;
+			state = "closed";
 			return result;
 		} catch (error) {
-			failures++;
-			lastFailureAt = Date.now();
-			if (failures >= breaker.threshold) state = "open";
+			if (isRetryable(error)) {
+				failures++;
+				lastFailureAt = Date.now();
+				if (failures >= breaker.threshold || isProbe) state = "open";
+			} else if (isProbe) {
+				// The backend answered; it's up.
+				failures = 0;
+				state = "closed";
+			}
 			throw error;
+		} finally {
+			if (isProbe) probing = false;
 		}
 	}
 

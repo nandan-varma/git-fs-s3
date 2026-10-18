@@ -1,4 +1,5 @@
 import git from "isomorphic-git";
+import { GitInvalidRequestError, GitPathNotFoundError } from "../git-errors.js";
 import type { Repo } from "./types.js";
 
 export interface TreeEntry {
@@ -12,9 +13,16 @@ export interface TreeEntry {
 const joinPath = (prefix: string, name: string) =>
 	prefix ? `${prefix.replace(/\/+$/, "")}/${name}` : name;
 
+/** File modes a blob entry can carry; anything else isn't a regular file. */
+const BLOB_MODES = new Set(["100644", "100755", "120000"]);
+
 /**
  * Build/update a git tree by overlaying new blobs onto an existing tree,
  * returning the new root tree oid. `entries` maps relative paths to blob oids.
+ *
+ * An updated file keeps its existing mode (executable bit, symlink); a path
+ * that names an existing directory, or runs through an existing file, is
+ * rejected rather than silently replacing what's there.
  */
 export async function upsertTree(
 	repo: Repo,
@@ -39,8 +47,12 @@ export async function upsertTree(
 		}
 	}
 	for (const [name, blobOid] of direct) {
+		const current = byName.get(name);
+		if (current && current.type !== "blob") {
+			throw new GitInvalidRequestError(`"${name}" is a directory, not a file`);
+		}
 		byName.set(name, {
-			mode: "100644",
+			mode: current && BLOB_MODES.has(current.mode) ? current.mode : "100644",
 			path: name,
 			oid: blobOid,
 			type: "blob",
@@ -51,7 +63,10 @@ export async function upsertTree(
 	const nestedResults = await Promise.all(
 		Array.from(nested, async ([dir, subEntries]) => {
 			const entry = byName.get(dir);
-			const subtreeOid = entry?.type === "tree" ? entry.oid : undefined;
+			if (entry && entry.type !== "tree") {
+				throw new GitInvalidRequestError(`"${dir}" is a file, not a directory`);
+			}
+			const subtreeOid = entry?.oid;
 			const newOid = await upsertTree(repo, subtreeOid, subEntries);
 			return [dir, newOid] as const;
 		}),
@@ -62,26 +77,51 @@ export async function upsertTree(
 	return git.writeTree({ ...repo, tree: Array.from(byName.values()) });
 }
 
-/** Remove a file path from a tree, returning the new root tree oid. */
+/**
+ * Remove a file path from a tree, returning the new root tree oid. Throws
+ * GitPathNotFoundError when there's no such file; directories left empty
+ * are dropped, as git never stores an empty subtree.
+ */
 export async function deleteFromTree(
 	repo: Repo,
 	treeOid: string,
 	filePath: string,
 ): Promise<string> {
+	const result = await deleteFromSubtree(repo, treeOid, filePath, filePath);
+	return result ?? git.writeTree({ ...repo, tree: [] });
+}
+
+/** The new subtree oid, or null when removing the file left it empty. */
+async function deleteFromSubtree(
+	repo: Repo,
+	treeOid: string,
+	filePath: string,
+	fullPath: string,
+): Promise<string | null> {
 	const existing = (await git.readTree({ ...repo, oid: treeOid })).tree;
 	const byName = new Map(existing.map((e) => [e.path, e]));
 	const slash = filePath.indexOf("/");
+	const name = slash === -1 ? filePath : filePath.slice(0, slash);
+	const entry = byName.get(name);
 	if (slash === -1) {
-		byName.delete(filePath);
-	} else {
-		const dir = filePath.slice(0, slash);
-		const rest = filePath.slice(slash + 1);
-		const entry = byName.get(dir);
-		if (entry?.type === "tree") {
-			const newOid = await deleteFromTree(repo, entry.oid, rest);
-			byName.set(dir, { ...entry, oid: newOid });
+		if (entry?.type !== "blob") {
+			throw new GitPathNotFoundError(`No such file: ${fullPath}`);
 		}
+		byName.delete(name);
+	} else {
+		if (entry?.type !== "tree") {
+			throw new GitPathNotFoundError(`No such file: ${fullPath}`);
+		}
+		const newOid = await deleteFromSubtree(
+			repo,
+			entry.oid,
+			filePath.slice(slash + 1),
+			fullPath,
+		);
+		if (newOid === null) byName.delete(name);
+		else byName.set(name, { ...entry, oid: newOid });
 	}
+	if (byName.size === 0) return null;
 	return git.writeTree({ ...repo, tree: Array.from(byName.values()) });
 }
 

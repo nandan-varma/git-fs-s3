@@ -43,9 +43,10 @@ Fetch-API route handler.
 
    export async function receivePack(repo: Repo, request: Request) {
      const body = new Uint8Array(await request.arrayBuffer());
-     const { results, stalePackPaths } = await applyReceivePack(
+     const parsed = parseReceivePackBody(body);
+     const { results, stalePackPaths, unpackError } = await applyReceivePack(
        repo,
-       parseReceivePackBody(body),
+       parsed,
        { repack: { threshold: 4 } } // or false to never auto-consolidate
      );
 
@@ -56,7 +57,10 @@ Fetch-API route handler.
        await deleteFromSecondaryStorage(repo, path);
      }
 
-     const { status, headers, body: respBody } = receivePackResponse(results);
+     const { status, headers, body: respBody } = receivePackResponse(results, {
+       capabilities: parsed.capabilities,
+       unpackError,
+     });
      return new Response(respBody, { status, headers });
    }
    ```
@@ -112,8 +116,19 @@ await handleUploadPack(
 <Aside type="tip">
 	The single-pack fast path (a fresh clone of an already-consolidated repo)
 	skips the reachability walk entirely, so it never reaches `beforeWalk` —
-	you don't need to special-case that.
+	you don't need to special-case that. It only applies when the repository
+	has exactly one pack, no loose objects, and that pack's index lists every
+	wanted object; anything else takes the normal walk.
 </Aside>
+
+## What upload-pack will serve
+
+Every `want` must be a ref tip or an ancestor of one; anything else (say, a
+commit a force-push removed, still sitting in an old pack) is answered with
+`ERR upload-pack: not our ref <oid>`. Object ids that aren't 40 lowercase hex
+digits are a protocol error. The pack is side-band-64k framed only when the
+client asked for `side-band-64k` (git and isomorphic-git always do); a client
+that didn't gets the raw pack after `NAK`.
 
 ## How the clone/fetch pack is built
 
@@ -129,8 +144,13 @@ isomorphic-git's `packObjects`, which deflates every object without deltas.
 Measured on a real 3,368-object repository: building the pack went from
 ~1.1 s to ~8 ms, and the clone download from 10 MB to 2.6 MB.
 
-For a fetch with `have` lines, the haves are walked first and the wants walk
-stops at anything the client already has, so shared history is walked once.
+For a fetch with `have` lines, the server walks only the client's *commit*
+ancestry (commit objects, no trees), finds the boundary commits the new
+history builds on, and treats the full content of those boundary commits as
+already present. The wants walk then stops at anything in that set — so a
+fetch costs the new objects plus a few trees, not a walk of every tree the
+client already has. (Objects only older commits share may be re-sent; that's
+git's own boundary approximation, and never leaves anything missing.)
 Blobs aren't read during the upload-pack walk (their tree entries already
 say what they are); receive-pack and repack still read them, because there
 the walk *is* the existence check.

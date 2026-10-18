@@ -33,11 +33,13 @@ export async function analyzeMerge(
 			git.resolveRef({ ...repo, ref: qualifyBranchRef(targetBranch) }),
 		]);
 
-		const isDescendant = await git.isDescendent({
-			...repo,
-			oid: sourceOid,
-			ancestor: targetOid,
-		});
+		const isDescendant =
+			sourceOid === targetOid ||
+			(await git.isDescendent({
+				...repo,
+				oid: sourceOid,
+				ancestor: targetOid,
+			}));
 
 		return {
 			canMerge: true,
@@ -80,6 +82,14 @@ export async function fastForwardMerge(
 		git.resolveRef({ ...repo, ref: `refs/heads/${sourceBranch}` }),
 		git.resolveRef({ ...repo, ref: `refs/heads/${targetBranch}` }),
 	]);
+	// Nothing to merge when the target already contains the source (same
+	// commit, or source is an ancestor) — never write a no-op merge commit.
+	if (
+		sourceOid === targetOid ||
+		(await git.isDescendent({ ...repo, oid: targetOid, ancestor: sourceOid }))
+	) {
+		return { success: true, commitSha: targetOid };
+	}
 	const isFF = await git.isDescendent({
 		...repo,
 		oid: sourceOid,

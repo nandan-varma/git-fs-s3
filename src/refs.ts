@@ -73,6 +73,27 @@ export function isSafeRepoPath(p: string): boolean {
 }
 
 /**
+ * Whether `p` can name a file written into a tree: what {@link isSafeRepoPath}
+ * checks, plus every segment non-empty and neither `.` nor `..`, and no
+ * `.git` segment anywhere (any case) — git itself refuses to check those out,
+ * since a tracked `.git/config` in a subdirectory is a code-execution vector
+ * on clone. Use it for paths that become tree entries; reads keep the looser
+ * {@link isSafeRepoPath} (which also accepts `""`, the root).
+ */
+export function isSafeTreePath(p: string): boolean {
+	if (!isSafeRepoPath(p) || p.length === 0) return false;
+	return p
+		.split("/")
+		.every(
+			(segment) =>
+				segment.length > 0 &&
+				segment !== "." &&
+				segment !== ".." &&
+				segment.toLowerCase() !== ".git",
+		);
+}
+
+/**
  * Qualify a bare branch name to `refs/heads/<name>` before handing it to
  * isomorphic-git. `resolveRef`/`expand` try several candidate paths in
  * sequence for a bare name — `ref`, `refs/ref`, `refs/tags/ref`,

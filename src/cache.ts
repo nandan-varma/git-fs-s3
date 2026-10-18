@@ -145,6 +145,17 @@ export function createCachedStore(
 	const pendingHeads = new Map<string, Promise<ObjectStat | null>>();
 	const pendingLists = new Map<string, Promise<ListResult>>();
 
+	/**
+	 * Bumped by every write, delete and invalidation. A backend read that
+	 * started before one of those may finish after it carrying the old answer
+	 * (the old bytes, or "missing" for a key that now exists); it still
+	 * answers its own callers, but only a read that saw no write in between
+	 * may populate the cache — otherwise a stale miss could hide a freshly
+	 * written object for the whole TTL.
+	 */
+	let generation = 0;
+	const unchangedSince = (start: number) => generation === start;
+
 	const admit = (key: string, data: Uint8Array) => {
 		if (data.byteLength <= maxEntryBytes) {
 			cache.set(key, clone(data), { ttl: ttlForKey?.(key) });
@@ -158,6 +169,19 @@ export function createCachedStore(
 			if (entry.probe && !entry.empty) continue;
 			listCache.delete(listKey);
 		}
+		// Readers arriving after this write must not join a listing that
+		// started before it.
+		for (const listKey of pendingLists.keys()) {
+			const prefix = listKey.split("|").slice(2).join("|");
+			if (key.startsWith(prefix)) pendingLists.delete(listKey);
+		}
+	}
+
+	/** A write to `key` happened: no in-flight read of it may be joined or cached. */
+	function noteWrite(key: string): void {
+		generation++;
+		pendingGets.delete(key);
+		pendingHeads.delete(key);
 	}
 
 	function coalesced<T>(
@@ -168,7 +192,9 @@ export function createCachedStore(
 		if (!coalesce) return fn();
 		const inflight = pending.get(key);
 		if (inflight !== undefined) return inflight;
-		const p = fn().finally(() => pending.delete(key));
+		const p = fn().finally(() => {
+			if (pending.get(key) === p) pending.delete(key);
+		});
 		pending.set(key, p);
 		return p;
 	}
@@ -182,11 +208,14 @@ export function createCachedStore(
 			}
 			const data = await coalesced(pendingGets, key, async () => {
 				onMiss?.(key);
+				const start = generation;
 				const fetched = await store.get(key);
-				if (fetched !== null) {
-					admit(key, fetched);
-				} else if (cacheMisses) {
-					cache.set(key, MISS, { ttl: ttlForKey?.(key) });
+				if (unchangedSince(start)) {
+					if (fetched !== null) {
+						admit(key, fetched);
+					} else if (cacheMisses) {
+						cache.set(key, MISS, { ttl: ttlForKey?.(key) });
+					}
 				}
 				return fetched;
 			});
@@ -194,20 +223,33 @@ export function createCachedStore(
 		},
 
 		async put(key: string, data: Uint8Array): Promise<void> {
-			await store.put(key, data);
+			noteWrite(key);
+			try {
+				await store.put(key, data);
+			} finally {
+				// Even a failed put may have landed; never keep serving the
+				// pre-write answer for this key.
+				noteWrite(key);
+				cache.delete(key);
+				clearStaleListEntries(key);
+			}
 			admit(key, data);
-			if (data.byteLength > maxEntryBytes) cache.delete(key);
-			clearStaleListEntries(key);
 		},
 
 		async delete(key: string): Promise<void> {
-			await store.delete(key);
+			noteWrite(key);
+			try {
+				await store.delete(key);
+			} finally {
+				noteWrite(key);
+				cache.delete(key);
+				clearStaleListEntries(key);
+			}
 			if (cacheMisses) {
 				cache.set(key, MISS, { ttl: ttlForKey?.(key) });
 			} else {
 				cache.delete(key);
 			}
-			clearStaleListEntries(key);
 		},
 
 		async head(key: string): Promise<ObjectStat | null> {
@@ -218,8 +260,9 @@ export function createCachedStore(
 			}
 			return coalesced(pendingHeads, key, async () => {
 				onMiss?.(key);
+				const start = generation;
 				const stat = await store.head(key);
-				if (stat === null && cacheMisses) {
+				if (stat === null && cacheMisses && unchangedSince(start)) {
 					cache.set(key, MISS, { ttl: ttlForKey?.(key) });
 				}
 				return stat;
@@ -236,7 +279,9 @@ export function createCachedStore(
 			}
 			const result = await coalesced(pendingLists, listKey, async () => {
 				onMiss?.(prefix);
+				const start = generation;
 				const fetched = await store.list(prefix, listOptions);
+				if (!unchangedSince(start)) return fetched;
 				listCache.set(
 					listKey,
 					{
@@ -254,6 +299,14 @@ export function createCachedStore(
 		},
 
 		invalidate(prefix: string): void {
+			generation++;
+			for (const key of [...pendingGets.keys()]) {
+				if (key.startsWith(prefix)) pendingGets.delete(key);
+			}
+			for (const key of [...pendingHeads.keys()]) {
+				if (key.startsWith(prefix)) pendingHeads.delete(key);
+			}
+			pendingLists.clear();
 			for (const key of cache.keys()) {
 				if (key.startsWith(prefix)) cache.delete(key);
 			}

@@ -91,7 +91,7 @@ export async function handleInfoRefs(
 	const isUpload = service === "git-upload-pack";
 	const caps = isUpload
 		? `no-progress side-band-64k symref=HEAD:${headSymref} allow-tip-sha1-in-want allow-reachable-sha1-in-want agent=${agent}`
-		: `delete-refs report-status no-done agent=${agent}`;
+		: `report-status delete-refs side-band-64k agent=${agent}`;
 
 	const parts: Uint8Array[] = [pktLine(`# service=${service}\n`), FLUSH];
 

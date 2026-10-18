@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createCachedStore, MemoryObjectStore } from "../src/index.js";
+import {
+	createCachedStore,
+	MemoryObjectStore,
+	type ObjectStore,
+} from "../src/index.js";
 
 describe("createCachedStore", () => {
 	it("returns the cached bytes without copying when copy is false", async () => {
@@ -311,5 +315,87 @@ describe("createCachedStore list caching", () => {
 			delimiter: "/",
 		});
 		expect(listing.objects).toHaveLength(0);
+	});
+});
+
+describe("createCachedStore — reads racing writes", () => {
+	function deferredStore() {
+		const inner = new MemoryObjectStore();
+		let release: (() => void) | null = null;
+		const gate = () =>
+			new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		let holdNext = false;
+		const store: ObjectStore = {
+			async get(key) {
+				const result = await inner.get(key);
+				if (holdNext) {
+					holdNext = false;
+					await gate();
+				}
+				return result;
+			},
+			put: (k, d) => inner.put(k, d),
+			delete: (k) => inner.delete(k),
+			head: (k) => inner.head(k),
+			async list(prefix, options) {
+				const result = await inner.list(prefix, options);
+				if (holdNext) {
+					holdNext = false;
+					await gate();
+				}
+				return result;
+			},
+		};
+		return {
+			store,
+			inner,
+			holdNextRead: () => {
+				holdNext = true;
+			},
+			release: () => release?.(),
+		};
+	}
+
+	it("a miss read before a write never caches 'missing' over the written object", async () => {
+		const d = deferredStore();
+		const cached = createCachedStore(d.store, { cacheMisses: true });
+		d.holdNextRead();
+		const staleRead = cached.get("k");
+		await new Promise((r) => setTimeout(r, 0));
+		await cached.put("k", new TextEncoder().encode("v"));
+		d.release();
+		expect(await staleRead).toBeNull();
+		expect(
+			new TextDecoder().decode((await cached.get("k")) ?? new Uint8Array()),
+		).toBe("v");
+	});
+
+	it("a reader arriving after a write doesn't join the pre-write in-flight read", async () => {
+		const d = deferredStore();
+		const cached = createCachedStore(d.store, { cacheMisses: true });
+		d.holdNextRead();
+		const staleRead = cached.get("k");
+		await new Promise((r) => setTimeout(r, 0));
+		await cached.put("k", new TextEncoder().encode("v"));
+		const fresh = await cached.get("k");
+		expect(fresh).not.toBeNull();
+		d.release();
+		await staleRead;
+	});
+
+	it("a listing taken before a write isn't cached after it", async () => {
+		const d = deferredStore();
+		const cached = createCachedStore(d.store, { cacheLists: true });
+		d.holdNextRead();
+		const staleList = cached.list("dir/");
+		await new Promise((r) => setTimeout(r, 0));
+		await cached.put("dir/new", new TextEncoder().encode("v"));
+		d.release();
+		expect((await staleList).objects).toHaveLength(0);
+		expect((await cached.list("dir/")).objects.map((o) => o.key)).toEqual([
+			"dir/new",
+		]);
 	});
 });

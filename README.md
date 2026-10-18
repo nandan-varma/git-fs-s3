@@ -218,14 +218,18 @@ export async function uploadPack(repo: Repo, request: Request) {
 // POST .../git-receive-pack (push)
 export async function receivePack(repo: Repo, request: Request) {
   const body = new Uint8Array(await request.arrayBuffer());
-  const { results, stalePackPaths } = await applyReceivePack(
+  const parsed = parseReceivePackBody(body);
+  const { results, stalePackPaths, unpackError } = await applyReceivePack(
     repo,
-    parseReceivePackBody(body),
+    parsed,
     { repack: { threshold: 4 } }, // or false to never auto-consolidate
   );
   // stalePackPaths were removed locally by the repack — delete them from any
   // secondary storage this repo also lives in, same as you'd invalidate a cache.
-  const { status, headers, body: respBody } = receivePackResponse(results);
+  const { status, headers, body: respBody } = receivePackResponse(results, {
+    capabilities: parsed.capabilities,
+    unpackError,
+  });
   return new Response(respBody, { status, headers });
 }
 ```

@@ -54,6 +54,7 @@ export {
 	isSafeFullRefName,
 	isSafeRefName,
 	isSafeRepoPath,
+	isSafeTreePath,
 	qualifyBranchRef,
 } from "./refs.js";
 export {

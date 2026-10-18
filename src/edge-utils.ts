@@ -105,9 +105,21 @@ export async function sha1(
 export async function deflate(
 	data: Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
-	const stream = new Blob([data])
-		.stream()
-		.pipeThrough(new CompressionStream("deflate"));
+	// Response, not Blob.stream(): some Blob implementations (jsdom's) have
+	// no stream().
+	const stream = (new Response(data).body as ReadableStream).pipeThrough(
+		new CompressionStream("deflate"),
+	);
+	return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Inflate (zlib) via the DecompressionStream Web API. */
+export async function inflate(
+	data: Uint8Array<ArrayBuffer>,
+): Promise<Uint8Array<ArrayBuffer>> {
+	const stream = (new Response(data).body as ReadableStream).pipeThrough(
+		new DecompressionStream("deflate"),
+	);
 	return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 

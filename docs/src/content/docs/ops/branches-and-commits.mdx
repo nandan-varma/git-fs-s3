@@ -116,8 +116,8 @@ const author = authorNow('Ada', 'ada@example.com');
 		{ name: 'author', type: 'CommitAuthor', description: '' },
 		{
 			name: 'buildTree',
-			type: '(parentTreeOid?: string) => Promise<string>',
-			description: 'Receives the parent tree oid (undefined for an empty repo), returns the new root tree oid.',
+			type: '(parentTreeOid: string | undefined, writeRepo: Repo) => Promise<string>',
+			description: 'Receives the parent tree oid (undefined for an empty repo) and the repo to write through, returns the new root tree oid. Write every object via writeRepo — writes through the outer repo bypass the pack and land loose.',
 		},
 	]}
 	returns="Promise<string>"
@@ -126,8 +126,34 @@ const author = authorNow('Ada', 'ada@example.com');
 	reach for it directly when neither fits (a multi-step tree rewrite, a
 	merge commit with a synthetic tree). Handles the parent-resolution,
 	commit-object, and ref-update mechanics; you own tree construction via
-	`buildTree`.
+	`buildTree`. Every object the commit creates is stored as **one pack**
+	(see `withPackedWrites` below), written before the ref.
 </ApiSignature>
+
+<ApiSignature
+	name="withPackedWrites"
+	signature="withPackedWrites<T>(repo: Repo, fn: (packedRepo: Repo) => Promise<T>): Promise<T>"
+	returns="Promise<T>"
+>
+	Runs `fn` with a view of `repo` whose new loose objects are buffered in
+	memory and stored as a single pack — flushed (pack, then index) before
+	any other file is written inside `fn` (so a ref never becomes visible
+	before the objects it names), and once more when `fn` resolves. Wrap any
+	plumbing that writes objects (`writeBlob`/`writeTree`/`writeCommit`, or
+	a library like git-edge's `threeWayMerge`) in it. Two PUTs per operation
+	instead of one per object — and a repository that is never given loose
+	objects keeps the loose-object hint correct across processes (see the
+	production stack guide).
+</ApiSignature>
+
+Paths passed to `commitFilesToBare`/`deleteFileFromBare` must satisfy
+`isSafeTreePath`: relative, no empty, `.` or `..` segments, no `.git`
+segment in any case, no NUL. An updated file keeps its existing mode
+(executable bit, symlink). A path that names an existing directory, or runs
+through an existing file, is a `GitInvalidRequestError`; deleting a path
+that isn't a file is a `GitPathNotFoundError`, and a directory a delete
+leaves empty is removed. `createBranchFrom` throws `GitConflictError` for a
+name that exists; `deleteBranchByName` refuses the branch `HEAD` names.
 
 <Aside type="tip">
 	`writeCommitToBare` resolves the branch's current tip to determine the

@@ -122,11 +122,15 @@ for a full worked example.
 
 <ApiSignature
 	name="receivePackResponse"
-	signature="receivePackResponse(results: RefUpdateResult[]): GitHttpResult"
+	signature="receivePackResponse(results: RefUpdateResult[], options?: { capabilities?: string[]; unpackError?: string }): GitHttpResult"
 	returns="GitHttpResult"
 >
-	Builds the `report-status` response body from a set of ref-update
-	results.
+	Builds the `report-status` response from a set of ref-update results.
+	Pass the request's parsed `capabilities`: the report is side-band-64k
+	framed when the client asked for it (isomorphic-git's `push` always does,
+	and can't parse anything else), and empty when the client didn't ask for
+	`report-status`. `unpackError` (from `applyReceivePack`) reports a pack
+	that couldn't be stored, as `unpack <error>`.
 </ApiSignature>
 
 ## Repacking

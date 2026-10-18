@@ -44,10 +44,13 @@ createRetryStore(store, {
 });
 ```
 
-After `threshold` consecutive failures, the store stops even trying — every
-call fails fast with `CircuitOpenError` (`code: "EUNAVAILABLE"`) for
-`resetMs`, then lets exactly one request through to probe whether the
-backend has recovered.
+After `threshold` consecutive retryable failures, the store stops even
+trying — every call fails fast with `CircuitOpenError` (`code:
+"EUNAVAILABLE"`) for `resetMs`, then lets exactly one request through to
+probe whether the backend has recovered (concurrent calls keep failing fast
+until that probe settles). Any success resets the count, and errors your
+`isRetryable` rejects (a 403, a malformed request) never count — they say
+nothing about the backend's health.
 
 <Aside type="tip">
 	Fail-fast during an outage matters as much as retrying during a blip —

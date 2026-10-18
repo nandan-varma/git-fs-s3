@@ -85,10 +85,10 @@ describe("repackRepository", () => {
 
 		const stalePaths = await repackRepository(repo, { threshold: 4 });
 
-		expect(stalePaths.length).toBe(4);
-		for (const p of stalePaths) {
-			expect(p.startsWith("objects/pack/dummy-")).toBe(true);
-		}
+		// The four dummies, plus the packs seeding's commits wrote.
+		expect(
+			stalePaths.filter((p) => p.startsWith("objects/pack/dummy-")),
+		).toHaveLength(4);
 
 		// Force every subsequent read through the new pack (see
 		// deleteLooseObjects's comment) so isomorphic-git's own packfile
@@ -139,10 +139,10 @@ describe("repackRepository", () => {
 
 	it("skips repacking below the pack-count threshold", async () => {
 		const { repo } = makeRepo();
-		await seed(repo, 2);
+		await seed(repo, 2); // one pack per commit
 		await addDummyPackFiles(repo, 2);
 
-		const stalePaths = await repackRepository(repo, { threshold: 4 });
+		const stalePaths = await repackRepository(repo, { threshold: 5 });
 		expect(stalePaths).toEqual([]);
 	});
 

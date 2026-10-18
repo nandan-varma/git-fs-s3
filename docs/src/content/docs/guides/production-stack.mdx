@@ -76,6 +76,13 @@ guaranteed miss — pure wasted round trips. `looseObjectHints: true` tracks,
 per gitdir, whether *any* loose object has ever been seen, so a packed repo
 skips the probe entirely.
 
+The hint is per process: a process that saw "no loose objects" can't learn
+that another process later wrote one. That's why this package's own writers
+never write loose objects — commits go through `withPackedWrites`, pushes
+and repacks write packs — and why you should wrap any other object-writing
+code the same way. A repository that only ever receives packs keeps every
+process's hint correct.
+
 The first loose-object read under a gitdir detects its hint with one bounded
 `LIST` (concurrent reads share it). Call `detectLooseObjects(gitdir)` to do it
 up front instead, e.g. alongside other warm-up work:
