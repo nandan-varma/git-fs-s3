@@ -3,11 +3,14 @@ import { join } from "node:path";
 import git from "isomorphic-git";
 import { describe, expect, it } from "vitest";
 import {
+	createCachedStore,
 	createGitFs,
+	createRetryStore,
 	getObjectSize,
 	MemoryObjectStore,
 	type ObjectStore,
 } from "../src/index.js";
+import { authorNow, commitFilesToBare } from "../src/ops/index.js";
 import type { Repo } from "../src/ops/index.js";
 import {
 	OBJ_OFS_DELTA,
@@ -133,6 +136,60 @@ describe("getObjectSize", () => {
 		// The same object *is* measurable through a range-capable store, so the
 		// null above is about the store, not about the object.
 		expect(await getObjectSize(fixtureRepo, first.oid)).toBeTypeOf("number");
+	});
+
+	it("survives the decorator stack a real application builds", async () => {
+		// r2 → retry → cache → fs: every wrapper returns a *new* object, so a
+		// method that isn't forwarded explicitly is silently dropped — and a
+		// dropped `getRange` does not fail, it makes `getObjectSize` answer null,
+		// so every size gate quietly reads the whole object instead of refusing
+		// it. That is how this bug reached a release: the other tests in this file
+		// use a bare store, where the method is never in question.
+		const store = new MemoryObjectStore();
+		const repo: Repo = {
+			fs: createGitFs(createCachedStore(createRetryStore(store))),
+			gitdir: "git",
+			cache: {},
+		};
+		const content = new TextEncoder().encode("packed through the whole stack");
+		const commitOid = await commitFilesToBare(repo, {
+			branch: "main",
+			message: "one file",
+			author: authorNow("Test", "test@example.com"),
+			files: [{ path: "file.txt", content }],
+		});
+
+		// `commitFilesToBare` returns the commit; the blob is the interesting
+		// object, since its size is what a caller gates on.
+		const { commit } = await git.readCommit({ ...repo, oid: commitOid });
+		const { tree } = await git.readTree({ ...repo, oid: commit.tree });
+		const blobOid = tree.find((entry) => entry.path === "file.txt")?.oid;
+		if (!blobOid) throw new Error("blob missing from the committed tree");
+
+		// A null here would mean "size unknown" — exactly the failure this test
+		// exists to catch, since a dropped `getRange` makes it null rather than
+		// throwing.
+		expect(await getObjectSize(repo, blobOid)).toBe(content.byteLength);
+	});
+
+	it("reports no range support when the store has none, even through wrappers", async () => {
+		const store = new MemoryObjectStore();
+		const withoutRange: ObjectStore = {
+			get: (k) => store.get(k),
+			put: (k, d) => store.put(k, d),
+			delete: (k) => store.delete(k),
+			head: (k) => store.head(k),
+			list: (p, o) => store.list(p, o),
+		};
+		const repo: Repo = {
+			fs: createGitFs(createCachedStore(createRetryStore(withoutRange))),
+			gitdir: "git",
+			cache: {},
+		};
+		// Wrapping must not invent the capability.
+		expect(
+			(repo.fs as { promises: { getRange?: unknown } }).promises.getRange,
+		).toBeUndefined();
 	});
 
 	it("returns null for an object no pack lists", async () => {

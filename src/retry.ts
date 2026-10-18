@@ -169,6 +169,12 @@ export function createRetryStore(
 		throw lastError;
 	}
 
+	// Optional methods must be forwarded explicitly: this returns a new object,
+	// so anything not listed here is dropped — and a dropped `getRange` is
+	// invisible, because callers that want it report "unknown" rather than
+	// failing. `object-size.test.ts` asserts it survives the whole stack.
+	const range = store.getRange?.bind(store);
+
 	return {
 		get: (key) => run("get", key, () => store.get(key)),
 		put: (key, data) => run("put", key, () => store.put(key, data)),
@@ -176,5 +182,11 @@ export function createRetryStore(
 		head: (key) => run("head", key, () => store.head(key)),
 		list: (prefix, listOptions) =>
 			run("list", prefix, () => store.list(prefix, listOptions)),
+		...(range
+			? {
+					getRange: (key: string, start: number, end: number) =>
+						run("getRange", key, () => range(key, start, end)),
+				}
+			: {}),
 	};
 }
