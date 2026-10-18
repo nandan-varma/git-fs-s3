@@ -36,6 +36,29 @@ import { /* ... */ } from 'git-fs-s3';
 | `prefetchPacks` | `(gitdir: string, opts?: { maxPacks? }) => Promise<void>` | Warms every `.pack`/`.idx` in parallel before a sequential walk. |
 | `invalidate` | `(pathPrefix: string) => void` | Drops hints and registered gitdirs under the prefix and forwards to the store's own `invalidate` if it has one. |
 
+## Object size
+
+<ApiSignature
+	name="getObjectSize"
+	signature="getObjectSize(repo: Repo, oid: string): Promise<number | null>"
+	params={[
+		{ name: 'repo', type: 'Repo', description: 'The same <code>{ fs, gitdir, cache? }</code> handle every op takes.' },
+		{ name: 'oid', type: 'string', description: 'The object to measure.' },
+	]}
+	returns="Promise<number | null>"
+>
+	The object's size in bytes **without inflating it**, from its pack entry:
+	the entry header for a whole object, and the delta header inside its
+	deflated data for a deltified one. `null` means the size isn't available —
+	a loose object, an object no pack indexes, a store without
+	<code>getRange</code>, or a delta prefix too short to read — so a caller
+	reads the object rather than treating `null` as "too large".
+
+	This is the cheapest way to answer "is this blob too large to render or
+	diff?" before paying for the object itself. Costs one `.idx` read plus one
+	or two small range reads.
+</ApiSignature>
+
 ## Git layout
 
 Typed views of gitdir paths, instead of matching path strings.

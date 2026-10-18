@@ -119,7 +119,7 @@ pattern.
 | `CommitInfo` | `{ oid, commit: { message, tree, parent, author, committer }, payload }` |
 | `CommitLogOptions` | `{ ref?, depth?, knownHeadSha? }` |
 | `TreeEntry` | `{ path, mode, type: "blob" \| "tree", oid, size? }` |
-| `DiffFile` | `{ path, status: "added" \| "modified" \| "deleted", kind: "text" \| "binary" \| "too-large", additions, deletions, patch, oldSize?, newSize? }` |
+| `DiffFile` | `{ path, status: "added" \| "modified" \| "deleted", kind: "text" \| "binary" \| "too-large", additions, deletions, patch, oldSize?, newSize? }` — a file over `MAX_DIFF_TEXT_BYTES` is `too-large` and is never read: its size comes from its pack entry (`getObjectSize`). |
 | `DiffResult` | `{ files: DiffFile[]; totalAdditions; totalDeletions; totalFiles }` |
 | `CommitSummary` | `{ sha, message, authorName, authorEmail, createdAt }` — `summarizeCommit(commit)` builds one |
 | `FileHistoryResult` | `{ entries: CommitSummary[]; truncated: boolean }` |

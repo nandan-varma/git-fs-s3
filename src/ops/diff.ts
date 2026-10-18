@@ -1,11 +1,29 @@
 import { createTwoFilesPatch } from "diff";
 import git, { type WalkerEntry } from "isomorphic-git";
 import { readBlobContent } from "../edge-utils.js";
+import { getObjectSize } from "../object-size.js";
+import { createSemaphore } from "../semaphore.js";
 import { getCommit, resolveCommit } from "./history.js";
 import type { Repo } from "./types.js";
 
 /** Text files larger than this get no patch (kind "too-large"). */
 export const MAX_DIFF_TEXT_BYTES = 1024 * 1024;
+
+/**
+ * Blob reads and size probes one diff may have in flight at once. The walk
+ * visits a directory's entries concurrently, so without a bound a commit
+ * touching a wide tree issues one object-store request per entry at once; each
+ * read also materialises a whole blob. High enough to stay pipelined, low
+ * enough that a wide change can't exhaust sockets or memory from one request.
+ */
+const MAX_CONCURRENT_READS = 16;
+
+/** A side's oid and the size its pack entry reports, when it can be read. */
+interface SideMeta {
+	readonly oid: string;
+	/** `null` when the object isn't a packed object whose size is readable. */
+	readonly size: number | null;
+}
 
 export interface DiffFile {
 	path: string;
@@ -77,6 +95,9 @@ function buildDiffFile(
 	before: BlobContent | null,
 	after: BlobContent | null,
 ): DiffFile {
+	// `kind: "too-large"` is normally decided from the pack entry's size before
+	// anything is read (see `diffTrees`); this is the path for a side whose size
+	// wasn't available, so a large blob is still caught — just after reading it.
 	const kind: DiffFile["kind"] =
 		before?.isBinary || after?.isBinary
 			? "binary"
@@ -150,9 +171,29 @@ async function diffTrees(
 	oldTreeOid: string | null,
 	newTreeOid: string,
 ): Promise<Omit<DiffResult, "oldRef" | "newRef">> {
-	const readSide = async (entry: WalkerEntry | null) => {
+	const reads = createSemaphore(MAX_CONCURRENT_READS);
+
+	/**
+	 * A blob side's oid plus its size from its pack entry — asked before any
+	 * content is read, so a file over {@link MAX_DIFF_TEXT_BYTES} is rejected
+	 * without ever being inflated. `size` is `null` when the size isn't
+	 * available (a loose object, or a store without range reads), in which case
+	 * the caller reads the blob and the size check below still applies.
+	 */
+	const sideMeta = async (
+		entry: WalkerEntry | null,
+	): Promise<SideMeta | null> => {
 		if (!entry || (await entry.type()) !== "blob") return null;
-		const { blob } = await git.readBlob({ ...repo, oid: await entry.oid() });
+		const oid = await entry.oid();
+		return { oid, size: await reads.run(() => getObjectSize(repo, oid)) };
+	};
+
+	/** The side's content, or `null` when it isn't there. */
+	const readContent = async (side: SideMeta | null) => {
+		if (!side) return null;
+		const { blob } = await reads.run(() =>
+			git.readBlob({ ...repo, oid: side.oid }),
+		);
 		return readBlobContent(blob);
 	};
 	const trees = oldTreeOid
@@ -186,9 +227,31 @@ async function diffTrees(
 				]);
 				if (oldOid === newOid) return undefined;
 			}
+			const [oldSide, newSide] = await Promise.all([
+				sideMeta(oldEntry),
+				sideMeta(newEntry),
+			]);
+			// A file over the limit gets no patch and is never read: that check is
+			// the reason the size is asked for first.
+			if (
+				(oldSide?.size ?? 0) > MAX_DIFF_TEXT_BYTES ||
+				(newSide?.size ?? 0) > MAX_DIFF_TEXT_BYTES
+			) {
+				return {
+					path: filepath,
+					status: !oldSide ? "added" : !newSide ? "deleted" : "modified",
+					kind: "too-large",
+					additions: 0,
+					deletions: 0,
+					patch: "",
+					oldSize: oldSide?.size ?? undefined,
+					newSize: newSide?.size ?? undefined,
+				} satisfies DiffFile;
+			}
+
 			const [before, after] = await Promise.all([
-				readSide(oldEntry),
-				readSide(newEntry),
+				readContent(oldSide),
+				readContent(newSide),
 			]);
 			return before || after
 				? buildDiffFile(filepath, before, after)

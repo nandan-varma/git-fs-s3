@@ -8,6 +8,18 @@
 export interface ObjectStore {
 	/** Return the object's bytes, or `null` if the key does not exist. */
 	get(key: string): Promise<Uint8Array | null>;
+	/**
+	 * Bytes `start`..`end` (inclusive) of the object, or `null` if the key does
+	 * not exist. Optional: a store that cannot serve ranges leaves it undefined,
+	 * and the one caller that wants it (`object-size.ts`) then reports "unknown
+	 * size" rather than fetching a whole pack — which is the cost it exists to
+	 * avoid.
+	 */
+	getRange?(
+		key: string,
+		start: number,
+		end: number,
+	): Promise<Uint8Array | null>;
 	/** Create or overwrite the object at `key`. */
 	put(key: string, data: Uint8Array): Promise<void>;
 	/** Delete the object at `key`. Must succeed silently if it does not exist. */
@@ -114,6 +126,12 @@ export interface GitFsClient {
 			filepath: string,
 			options?: ReadFileOptions | Encoding,
 		): Promise<Uint8Array | string>;
+		/** Present only when the backing store supports range reads. */
+		getRange?(
+			filepath: string,
+			start: number,
+			end: number,
+		): Promise<Uint8Array | null>;
 		writeFile(
 			filepath: string,
 			data: Uint8Array | string,

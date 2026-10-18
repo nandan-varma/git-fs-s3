@@ -153,6 +153,19 @@ The returned fs also exposes:
 - `detectLooseObjects(gitdir)` — detect the loose-object hint up front (otherwise done on the first loose read).
 - `prefetchPacks(gitdir, { maxPacks? })` — warm every `.pack`/`.idx` in parallel before a sequential walk (skipped past `maxPacks * 2` entries).
 - `invalidate(pathPrefix)` — drop hints and registered gitdirs under the prefix and forward to the store's `invalidate` if it has one.
+- `getRange(filepath, start, end)` — present only when the backing store supports range reads (see `ObjectStore.getRange`); `getObjectSize` is its only caller.
+
+### `getObjectSize(repo, oid)`
+
+An object's size in bytes, **without reading it** — or `null` when the size
+isn't available (a loose object, an object no pack indexes, a store without
+range reads, or a delta prefix too short to yield its header). Built for one
+question: *is this object too large to render or diff?* A git object's length
+lives in its pack entry, so without this the only way to ask is to inflate the
+object — which is the cost a size limit exists to avoid. The answer is exact
+(whole objects from the entry header, deltified ones from the delta header that
+opens their deflated stream) and costs one `.idx` read plus one or two small
+range reads of the pack.
 
 ### Git layout
 
@@ -160,7 +173,7 @@ The returned fs also exposes:
 
 ### `S3ObjectStore({ client, bucket, prefix?, contentType? })`
 
-`ObjectStore` over `@aws-sdk/client-s3` (optional peer dependency, loaded only via the `/s3` subpath). Reuse one `S3Client` across stores so HTTP connections are pooled — a busy repo page can mean hundreds of object reads. `contentType(key)` optionally derives a `Content-Type` header for uploads.
+`ObjectStore` over `@aws-sdk/client-s3` (optional peer dependency, loaded only via the `/s3` subpath). Implements the optional `getRange(key, start, end)` (S3's `Range` header, inclusive at both ends), which `getObjectSize` uses. Reuse one `S3Client` across stores so HTTP connections are pooled — a busy repo page can mean hundreds of object reads. `contentType(key)` optionally derives a `Content-Type` header for uploads.
 
 ### `MemoryObjectStore()`
 
@@ -248,7 +261,7 @@ Every client-supplied ref name in a push is validated with `isSafeFullRefName` (
 - **Commits** — `commitFilesToBare` (write one or more files as a single commit against a branch, creating it if new), `deleteFileFromBare`, `authorNow`.
 - **Trees** — `upsertTree`/`deleteFromTree` (overlay blobs onto a tree, return the new root oid), `listTreeEntries`, `findTreeEntry`.
 - **History** — `getCommitLog`/`getCommitHistory` (memoized commit-chain walks; pages are slices of the deepest walk), `getFileContent`/`getTreeFromRef`, `getFileHistory` (per-file commit history), `getLastCommitsForTree` (the "last commit" column on a directory listing), `summarizeCommit`.
-- **Diff** — `getCommitDiff` (a commit against its first parent) and `getDiffBetweenRefs` (a pull request's three-dot diff, against the merge base); unified patches via the `diff` package (optional peer dependency).
+- **Diff** — `getCommitDiff` (a commit against its first parent) and `getDiffBetweenRefs` (a pull request's three-dot diff, against the merge base); unified patches via the `diff` package (optional peer dependency). A file over `MAX_DIFF_TEXT_BYTES` is reported as `kind: "too-large"` **without being read** — the size comes from its pack entry (see `getObjectSize`) — and a diff's blob reads are bounded (`MAX_CONCURRENT_READS`), so one wide commit can't fan out into a request per entry.
 - **Merge** — `analyzeMerge` (fast-forward/diverged pre-check — not a real content-conflict check, see its doc comment) and `fastForwardMerge`. Neither does a real (non-fast-forward) content merge — for that, see [`git-edge`](https://www.npmjs.com/package/git-edge)'s `threeWayMerge`, an object-level three-way merge with no worktree needed, built on this package (same `{ fs, gitdir, cache? }` shape; it stores merges through `withPackedWrites`).
 
 ```typescript

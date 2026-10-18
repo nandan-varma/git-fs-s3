@@ -113,6 +113,46 @@ export async function deflate(
 	return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+/**
+ * The first `enough` bytes of a deflate stream, given a prefix of that stream.
+ *
+ * Deflate emits output as it consumes input, so a bounded compressed prefix
+ * yields a bounded uncompressed prefix — which is how a delta entry's header
+ * (the only place its reconstructed size is recorded) can be read without
+ * inflating the whole object. The prefix ends mid-symbol by construction, so
+ * the stream errors after the bytes we wanted have already arrived; that error
+ * carries no information and is not propagated.
+ *
+ * Returns `null` when fewer than `enough` bytes could be recovered, so a caller
+ * distinguishes "not readable from this prefix" from a zero-length answer.
+ */
+export async function inflatePrefix(
+	compressed: Uint8Array<ArrayBuffer>,
+	enough: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+	const stream = (new Response(compressed).body as ReadableStream).pipeThrough(
+		new DecompressionStream("deflate"),
+	);
+	const reader = stream.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (total < enough) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			chunks.push(value);
+			total += value.byteLength;
+		}
+	} catch {
+		// Expected: the compressed prefix is truncated. Whatever was emitted
+		// before that is what this returns.
+	} finally {
+		await reader.cancel().catch(() => {});
+	}
+	if (total === 0) return null;
+	return concat(...chunks.map((chunk) => new Uint8Array(chunk)));
+}
+
 /** Inflate (zlib) via the DecompressionStream Web API. */
 export async function inflate(
 	data: Uint8Array<ArrayBuffer>,

@@ -18,6 +18,15 @@ export class MemoryObjectStore implements ObjectStore {
 		return data ? data.slice() : null;
 	}
 
+	async getRange(
+		key: string,
+		start: number,
+		end: number,
+	): Promise<Uint8Array | null> {
+		const data = this.objects.get(key);
+		return data ? data.slice(start, end + 1) : null;
+	}
+
 	async put(key: string, data: Uint8Array): Promise<void> {
 		this.objects.set(key, data.slice());
 	}

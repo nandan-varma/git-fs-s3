@@ -13,22 +13,19 @@
 
 import { concat, encodeUtf8, fromHex, sha1, toHex } from "../edge-utils.js";
 import type { Repo } from "../ops/types.js";
+import {
+	encodeEntryHeader,
+	OBJ_OFS_DELTA,
+	OBJ_REF_DELTA,
+	OID_BYTES,
+	readEntryHeader,
+	readOfsDeltaOffset,
+} from "../pack-entry.js";
 import { packFileName, parsePackDirectory } from "../pack-files.js";
+import { type PackIndexEntry, readPackIndex } from "../pack-index.js";
 import { rawFs } from "./types.js";
 
-const OBJ_OFS_DELTA = 6;
-const OBJ_REF_DELTA = 7;
-const OID_BYTES = 20;
 const PACK_TRAILER_BYTES = 20;
-
-const IDX_V2 = {
-	magic: 0xff744f63,
-	version: 2,
-	headerBytes: 8,
-	fanoutEntries: 256,
-	/** Offsets with this bit set index the 64-bit large-offset table. */
-	largeOffsetFlag: 0x80000000,
-} as const;
 
 /** One object's stored entry inside a pack. */
 interface PackEntry {
@@ -41,41 +38,6 @@ interface PackEntry {
 interface IndexedPack {
 	readonly entries: Map<string, PackEntry>;
 	readonly oidAtOffset: Map<number, string>;
-}
-
-/** An object's position in a pack, as listed by its `.idx`. */
-interface PackIndexEntry {
-	readonly oid: string;
-	readonly offset: number;
-}
-
-/** Entries of a version-2 `.idx`; `null` for any other format. */
-export function readPackIndex(idx: Uint8Array): PackIndexEntry[] | null {
-	const view = new DataView(idx.buffer, idx.byteOffset, idx.byteLength);
-	const namesStart = IDX_V2.headerBytes + IDX_V2.fanoutEntries * 4;
-	if (
-		idx.byteLength < namesStart ||
-		view.getUint32(0) !== IDX_V2.magic ||
-		view.getUint32(4) !== IDX_V2.version
-	) {
-		return null;
-	}
-	// The last fanout slot counts every object in the pack.
-	const count = view.getUint32(namesStart - 4);
-	const crcStart = namesStart + count * OID_BYTES;
-	const offsetsStart = crcStart + count * 4;
-	if (idx.byteLength < offsetsStart + count * 4) return null;
-
-	const entries: PackIndexEntry[] = [];
-	for (let i = 0; i < count; i++) {
-		const offset = view.getUint32(offsetsStart + i * 4);
-		// Packs over 2 GiB never reach this in-memory path; let the caller
-		// fall back instead of half-supporting the large-offset table.
-		if (offset & IDX_V2.largeOffsetFlag) return null;
-		const at = namesStart + i * OID_BYTES;
-		entries.push({ oid: toHex(idx.subarray(at, at + OID_BYTES)), offset });
-	}
-	return entries;
 }
 
 /** Locate every entry of `pack` using its `.idx`. */
@@ -95,55 +57,6 @@ function indexPack(idx: Uint8Array, pack: Uint8Array): IndexedPack | null {
 		oidAtOffset.set(offset, oid);
 	}
 	return { entries, oidAtOffset };
-}
-
-/** The variable-length type/size header that starts every pack entry. */
-interface EntryHeader {
-	readonly type: number;
-	readonly size: number;
-	/** Bytes the header occupies. */
-	readonly length: number;
-}
-
-function readEntryHeader(bytes: Uint8Array, start: number): EntryHeader {
-	let byte = bytes[start] as number;
-	const type = (byte >> 4) & 0b111;
-	let size = byte & 0b1111;
-	let shift = 4;
-	let at = start + 1;
-	while (byte & 0x80) {
-		byte = bytes[at++] as number;
-		size += (byte & 0x7f) * 2 ** shift;
-		shift += 7;
-	}
-	return { type, size, length: at - start };
-}
-
-function encodeEntryHeader(type: number, size: number): Uint8Array {
-	const bytes: number[] = [];
-	let rest = Math.floor(size / 16);
-	bytes.push((rest > 0 ? 0x80 : 0) | (type << 4) | (size % 16));
-	while (rest > 0) {
-		const low = rest % 128;
-		rest = Math.floor(rest / 128);
-		bytes.push((rest > 0 ? 0x80 : 0) | low);
-	}
-	return new Uint8Array(bytes);
-}
-
-/** `OFS_DELTA`'s negative base offset: big-endian base-128 with +1 carries. */
-function readOfsDeltaOffset(
-	bytes: Uint8Array,
-	start: number,
-): { distance: number; length: number } {
-	let at = start;
-	let byte = bytes[at++] as number;
-	let distance = byte & 0x7f;
-	while (byte & 0x80) {
-		byte = bytes[at++] as number;
-		distance = (distance + 1) * 128 + (byte & 0x7f);
-	}
-	return { distance, length: at - start };
 }
 
 /** A pack entry ready to copy, with the oid of its delta base if any. */

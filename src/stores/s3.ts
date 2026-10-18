@@ -77,6 +77,28 @@ export class S3ObjectStore implements ObjectStore {
 		}
 	}
 
+	async getRange(
+		key: string,
+		start: number,
+		end: number,
+	): Promise<Uint8Array | null> {
+		try {
+			const response = await this.client.send(
+				new GetObjectCommand({
+					Bucket: this.bucket,
+					Key: this.fullKey(key),
+					// Inclusive at both ends, per the S3 API.
+					Range: `bytes=${start}-${end}`,
+				}),
+			);
+			if (!response.Body) return new Uint8Array(0);
+			return await response.Body.transformToByteArray();
+		} catch (error) {
+			if (isNotFound(error)) return null;
+			throw error;
+		}
+	}
+
 	async put(key: string, data: Uint8Array): Promise<void> {
 		await this.client.send(
 			new PutObjectCommand({

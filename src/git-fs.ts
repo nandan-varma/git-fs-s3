@@ -194,7 +194,18 @@ export function createGitFs(
 		throw enoent(syscall, filepath);
 	}
 
+	const range = store.getRange?.bind(store);
+
 	const promises: GitFsClient["promises"] = {
+		// Only defined when the backing store supports ranges, so a caller can
+		// test for it rather than have to interpret a failure.
+		...(range
+			? {
+					getRange: (filepath: string, start: number, end: number) =>
+						range(toKey(normalizePath(filepath)), start, end),
+				}
+			: {}),
+
 		async readFile(filepath, opts) {
 			const path = normalizePath(filepath);
 			if (await knownAbsent(path)) throw enoent("open", filepath);

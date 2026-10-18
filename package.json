@@ -1,7 +1,7 @@
 {
   "name": "git-fs-s3",
-  "version": "0.10.0",
-  "description": "isomorphic-git filesystem backend for S3-compatible object storage (AWS S3, Cloudflare R2, MinIO) — run git servers without a disk",
+  "version": "0.11.0",
+  "description": "isomorphic-git filesystem backend for S3-compatible object storage (AWS S3, Cloudflare R2, MinIO) \u2014 run git servers without a disk",
   "type": "module",
   "exports": {
     ".": {

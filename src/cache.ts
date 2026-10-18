@@ -124,6 +124,7 @@ export function createCachedStore(
 	const ttlForKey = options.ttlForKey;
 	const cacheMisses = options.cacheMisses ?? false;
 	const cacheLists = options.cacheLists ?? false;
+	const range = store.getRange?.bind(store);
 	const coalesce = options.coalesce ?? true;
 	const copy = options.copy ?? true;
 	const clone = (data: Uint8Array) => (copy ? data.slice() : data);
@@ -297,6 +298,16 @@ export function createCachedStore(
 			});
 			return copyListResult(result);
 		},
+
+		// Forwarded straight to the backing store: a range read is a handful of
+		// bytes at a known offset, so caching one buys nothing, and bypassing the
+		// cache here keeps this wrapper's read paths unchanged.
+		...(range
+			? {
+					getRange: (key: string, start: number, end: number) =>
+						range(key, start, end),
+				}
+			: {}),
 
 		invalidate(prefix: string): void {
 			generation++;
