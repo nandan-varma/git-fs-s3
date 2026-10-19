@@ -250,6 +250,54 @@ async function looseCommit(repo: Repo, message: string): Promise<string> {
 	return oid;
 }
 
+describe("handleUploadPack — negotiation reply", () => {
+	function fetchRequest(wantOid: string, haves: string[]) {
+		return concatBuffers(
+			pktLine(`want ${wantOid} side-band-64k\n`),
+			new TextEncoder().encode("0000"),
+			...haves.map((oid) => pktLine(`have ${oid}\n`)),
+			pktLine("done\n"),
+		);
+	}
+	const firstPktLine = (body: Uint8Array) =>
+		new TextDecoder().decode(
+			body.subarray(
+				4,
+				Number.parseInt(new TextDecoder().decode(body.subarray(0, 4)), 16),
+			),
+		);
+
+	it("ACKs the first have the server shares, so git doesn't warn 'no common commits'", async () => {
+		const repo = makeRepo();
+		await seed(repo, 2);
+		const [newer, older] = (await git.log({ ...repo, ref: "main" })).map(
+			(entry) => entry.oid,
+		) as [string, string];
+		const unknown = "1".repeat(40);
+
+		const result = await handleUploadPack(
+			repo,
+			fetchRequest(newer, [unknown, older]),
+		);
+
+		expect(result.status).toBe(200);
+		expect(firstPktLine(result.body)).toBe(`ACK ${older}\n`);
+	});
+
+	it("NAKs when none of the client's haves are known", async () => {
+		const repo = makeRepo();
+		await seed(repo, 1);
+		const head = await git.resolveRef({ ...repo, ref: "refs/heads/main" });
+
+		const result = await handleUploadPack(
+			repo,
+			fetchRequest(head, ["1".repeat(40)]),
+		);
+
+		expect(firstPktLine(result.body)).toBe("NAK\n");
+	});
+});
+
 describe("handleUploadPack — edge cases", () => {
 	it("doesn't serve the single pack verbatim when loose objects exist", async () => {
 		const repo = makeRepo();
@@ -354,7 +402,14 @@ describe("handleUploadPack — edge cases", () => {
 			pktLine("done\n"),
 		);
 		const fetched = await handleUploadPack(repo, body);
-		const pack = decodeSideBandPackfile(fetched.body.subarray(8));
+		const ackLength = Number.parseInt(
+			new TextDecoder().decode(fetched.body.subarray(0, 4)),
+			16,
+		);
+		expect(new TextDecoder().decode(fetched.body.subarray(4, ackLength))).toBe(
+			`ACK ${base}\n`,
+		);
+		const pack = decodeSideBandPackfile(fetched.body.subarray(ackLength));
 		const packDir = `${clone.gitdir}/objects/pack`;
 		await rawFs(clone).writeFile(`${packDir}/fetch.pack`, pack);
 		await git.indexPack({ ...clone, dir: packDir, filepath: "fetch.pack" });

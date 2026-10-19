@@ -3,6 +3,15 @@
 Releases of `git-fs-s3`, derived from this repository's release history. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.12.1] - 2026-10-19
+
+### Fixed
+
+- `handleUploadPack` answers a fetch's final negotiation round with
+  `ACK <first common have>` instead of always `NAK`. The pack was already
+  incremental, but the NAK told git there was no common history, so every
+  fetch printed `warning: no common commits`.
+
 ## [0.12.0] - 2026-10-18
 
 ### Changed

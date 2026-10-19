@@ -10,8 +10,8 @@ import {
 	MemoryObjectStore,
 	type ObjectStore,
 } from "../src/index.js";
-import { authorNow, commitFilesToBare } from "../src/ops/index.js";
 import type { Repo } from "../src/ops/index.js";
+import { authorNow, commitFilesToBare } from "../src/ops/index.js";
 import {
 	OBJ_OFS_DELTA,
 	OBJ_REF_DELTA,

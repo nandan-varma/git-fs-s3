@@ -199,6 +199,10 @@ export async function handleUploadPack(
 	}
 
 	let haveSet: Set<string> | undefined;
+	// Without multi_ack, the reply to the final batch is "ACK <oid>" for a
+	// common commit, or "NAK" when there is none — a NAK makes git print
+	// "no common commits" even though the pack below is incremental.
+	let commonHave: string | undefined;
 	if (haves.length > 0) {
 		haveSet = await runStep(hooks, "have boundary", async () => {
 			// Everything the client has: its commits' whole ancestry (commits
@@ -209,6 +213,7 @@ export async function handleUploadPack(
 				repo,
 				haves,
 			);
+			commonHave = haves.find((oid) => clientCommits.has(oid));
 			const { boundary } = await collectCommitAncestry(
 				repo,
 				wants,
@@ -261,5 +266,6 @@ export async function handleUploadPack(
 				: new Uint8Array(packfile ?? []);
 		}));
 
-	return result(concat(pktLine("NAK\n"), frame(packBytes)));
+	const ack = commonHave ? `ACK ${commonHave}\n` : "NAK\n";
+	return result(concat(pktLine(ack), frame(packBytes)));
 }
