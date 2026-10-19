@@ -1,12 +1,21 @@
 import git from "isomorphic-git";
 import { GitConflictError, GitInvalidRequestError } from "../git-errors.js";
 import { isSafeBranchName } from "../refs.js";
+import { peelToCommit } from "./history.js";
 import type { Repo } from "./types.js";
 
 export interface Branch {
 	name: string;
 	commit: string;
 	isDefault: boolean;
+}
+
+export interface Tag {
+	name: string;
+	/** The commit the tag names (annotated tags peeled). */
+	commit: string;
+	/** The tag object's own oid, for annotated tags; absent for lightweight ones. */
+	tagObject?: string;
 }
 
 /**
@@ -237,4 +246,29 @@ export async function assertBranchExists(
 ): Promise<void> {
 	assertSafeBranchName(name);
 	await resolveLooseRefFast(repo, `refs/heads/${name}`);
+}
+
+/** All tags with the commits they name, sorted by name; [] when there are none. */
+export async function listTags(repo: Repo): Promise<Tag[]> {
+	const names = (await listLooseRefNames(repo, "refs/tags")) ?? [];
+	const all = new Set([
+		...names,
+		...(await git.listTags(repo).catch(() => [] as string[])),
+	]);
+	const tags = await Promise.all(
+		[...all].filter(isSafeBranchName).map(async (name): Promise<Tag | null> => {
+			try {
+				const oid = await resolveLooseRefFast(repo, `refs/tags/${name}`);
+				const commit = await peelToCommit(repo, oid);
+				return commit === oid
+					? { name, commit }
+					: { name, commit, tagObject: oid };
+			} catch {
+				return null;
+			}
+		}),
+	);
+	return tags
+		.filter((tag): tag is Tag => tag !== null)
+		.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }

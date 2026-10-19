@@ -3,6 +3,16 @@
 Releases of `git-fs-s3`, derived from this repository's release history. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.14.0] - 2026-10-19
+
+### Added
+
+- Tags: every read that takes a `ref` (tree, file content, log, history,
+  diffs, last commits, submodules) now accepts a tag name, trying
+  `refs/heads/<name>` first and then `refs/tags/<name>`. Annotated tags are
+  peeled to their commit. `listTags` lists tags with their peeled commits in
+  version order; `peelToCommit` peels a single oid.
+
 ## [0.13.0] - 2026-10-19
 
 ### Changed

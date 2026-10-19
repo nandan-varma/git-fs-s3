@@ -258,6 +258,9 @@ Every client-supplied ref name in a push is validated with `isSafeFullRefName` (
 `git-fs-s3/ops` is a higher-level layer for building a git-hosting UI on top of `createGitFs` — the operations a repo browser / PR flow actually needs, each taking a `Repo` (`{ fs, gitdir, cache? }`) plus an optional `OpsHooks` (`{ resultCache?, step?, onNote?, prefetchPacks? }`) for the same timing/caching seam `GitFs` and `/http` use:
 
 - **Branches** — `listBranches`, `createBranchFrom`, `deleteBranchByName`.
+- **Tags** — `listTags` (annotated tags peeled; `peelToCommit` for one oid).
+  Every read that takes a `ref` accepts a tag name too; a branch wins over a
+  same-named tag.
 - **Commits** — `commitFilesToBare` (write one or more files as a single commit against a branch, creating it if new), `deleteFileFromBare`, `authorNow`.
 - **Trees** — `upsertTree`/`deleteFromTree` (overlay blobs onto a tree, return the new root oid), `listTreeEntries`, `findTreeEntry`.
 - **History** — `getCommitLog`/`getCommitHistory` (memoized commit-chain walks; pages are slices of the deepest walk), `getFileContent`/`getTreeFromRef`, `getFileHistory` (per-file commit history), `getLastCommitsForTree` (the "last commit" column on a directory listing), `summarizeCommit`.

@@ -5,7 +5,9 @@ export {
 	createBranchFrom,
 	deleteBranchByName,
 	listBranches,
+	listTags,
 	resolveLooseRefFast,
+	type Tag,
 } from "./branch.js";
 export {
 	authorNow,
@@ -39,6 +41,7 @@ export {
 	getFileContent,
 	getTreeFromRef,
 	HISTORY_WALK_DEPTH,
+	peelToCommit,
 	resolveCommit,
 	summarizeCommit,
 } from "./history.js";

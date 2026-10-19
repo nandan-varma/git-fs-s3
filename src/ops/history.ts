@@ -74,14 +74,44 @@ function wrapMissingObject<T>(
 }
 
 /** The commit a branch name, full ref or sha points at; GitRefNotFoundError if none. */
+/**
+ * A short name tries `refs/heads/<name>` first and then `refs/tags/<name>`,
+ * so a branch wins over a same-named tag. Annotated tags are peeled to the
+ * commit they point at, so every read accepts a tag wherever it accepts a
+ * branch.
+ */
 async function resolveRefOid(repo: Repo, ref: string): Promise<string> {
-	try {
-		return await git.resolveRef({ ...repo, ref: qualifyBranchRef(ref) });
-	} catch (err) {
-		if (isNotFound(err))
-			throw new GitRefNotFoundError(`Ref ${ref} does not exist`);
-		throw err;
+	const qualified = qualifyBranchRef(ref);
+	const candidates =
+		qualified === `refs/heads/${ref}`
+			? [qualified, `refs/tags/${ref}`]
+			: [qualified];
+	for (const candidate of candidates) {
+		try {
+			return await peelToCommit(
+				repo,
+				await git.resolveRef({ ...repo, ref: candidate }),
+			);
+		} catch (err) {
+			if (!isNotFound(err)) throw err;
+		}
 	}
+	throw new GitRefNotFoundError(`Ref ${ref} does not exist`);
+}
+
+/** Follow annotated tags (possibly nested) down to the object they name. */
+export async function peelToCommit(repo: Repo, oid: string): Promise<string> {
+	let current = oid;
+	for (let depth = 0; depth < 10; depth++) {
+		const { type, object } = await git.readObject({
+			...repo,
+			oid: current,
+			format: "parsed",
+		});
+		if (type !== "tag") return current;
+		current = (object as { object: string }).object;
+	}
+	throw new GitRefNotFoundError(`Tag chain at ${oid} is too deep`);
 }
 
 /** Resolve a branch name / full ref / sha to its commit. */
