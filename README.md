@@ -34,6 +34,8 @@ Use it to build git-backed CMSes, notes apps with real version history, lightwei
 npm install git-fs-s3 isomorphic-git   # ESM only, Node.js 22+
 # for the S3 store (any S3-compatible provider):
 npm install @aws-sdk/client-s3
+# or, for the fetch-based store (no AWS SDK):
+npm install aws4fetch
 ```
 
 ## Quick start
@@ -175,6 +177,14 @@ range reads of the pack.
 
 `ObjectStore` over `@aws-sdk/client-s3` (optional peer dependency, loaded only via the `/s3` subpath). Implements the optional `getRange(key, start, end)` (S3's `Range` header, inclusive at both ends), which `getObjectSize` uses. Reuse one `S3Client` across stores so HTTP connections are pooled — a busy repo page can mean hundreds of object reads. `contentType(key)` optionally derives a `Content-Type` header for uploads.
 
+### `createFetchS3Store({ endpoint, bucket, accessKeyId, secretAccessKey, region?, contentType?, fetch? })`
+
+From `git-fs-s3/fetch-s3`. An S3/R2/MinIO store over plain `fetch`, signed with [`aws4fetch`](https://github.com/mhart/aws4fetch) (optional peer dependency: `npm install aws4fetch`) — no AWS SDK, so it runs on Node, Vercel Functions and Workers alike. Implements `getRange`, ListObjectsV2 pagination and delimiters, and a server-side `copy(from, to)` (pass it to `movePrefix`). A 404 maps to `null`; any other failure throws `S3HttpError` with `$metadata.httpStatusCode` (429 is named `SlowDown`), which `isRetryableError` classifies. `region` defaults to `"auto"` (R2); timeouts are `bodyTimeoutMs` (30 s) and `metadataTimeoutMs` (10 s) per attempt. Retries are not built in — wrap it in `createRetryStore`.
+
+### `FileObjectStore(root)`
+
+From `git-fs-s3/node` (Node only, so edge bundles stay clean). A disk-backed store for local development: reads are served from memory, every write is mirrored to a file under `root`, and the tree is loaded back on first use, so repositories survive restarts. Keys that would escape `root` are rejected. Not for production.
+
 ### `MemoryObjectStore()`
 
 In-memory store; also the reference implementation of list/delimiter semantics.
@@ -198,9 +208,13 @@ Wraps any store with an in-process LRU read cache (git objects are content-addre
 Wraps any store with exponential-backoff retries and a per-instance circuit breaker. Place it directly above the network store, under the cache.
 
 - `retries` (3), `initialDelayMs` (100), `maxDelayMs` (5000), `jitter` (0.3)
-- `isRetryable(error)` — default retries network faults, throttling, and HTTP 5xx/429
+- `isRetryable(error)` — default is the exported `isRetryableError`: network faults (including `fetch`'s bare `TypeError`), timeouts, throttling, and HTTP 5xx/429. Compose it in your own classifier.
 - `breaker` — `{ threshold: 5, resetMs: 30_000 }` by default, or `false` to disable. While open, calls fail fast with `CircuitOpenError` (`code: "EUNAVAILABLE"`).
 - `onRetry(info)` — logging hook.
+
+### Prefix helpers and error classification
+
+`deletePrefix(store, prefix)` lists a prefix and deletes it in batches. `movePrefix(store, from, to, { copy? })` copies everything, then deletes the old keys only once every copy succeeded (a failed copy leaves the source untouched); pass a store's server-side `copy` to avoid pulling bytes through the process. Both return the object count, and neither touches caches above the store — call `invalidate(prefix)` yourself and hold your own lock. `isNotFoundError(error)` is true for the missing repository/ref/path/object errors, the ones to map to a 404.
 
 ## Git smart-HTTP
 

@@ -3,6 +3,17 @@
 Releases of `git-fs-s3`, derived from this repository's release history. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.15.0] - 2026-10-19
+
+### Added
+
+- `git-fs-s3/fetch-s3`: `createFetchS3Store`, an S3/R2 store over `fetch`
+  signed with `aws4fetch` (new optional peer dependency), with ranges,
+  server-side `copy` and `S3HttpError`.
+- `git-fs-s3/node`: `FileObjectStore`, a disk-backed store for local dev.
+- `isRetryableError` (the default retry classifier, now also retrying
+  fetch's bare `TypeError`), `isNotFoundError`, `deletePrefix`, `movePrefix`.
+
 ## [0.14.0] - 2026-10-19
 
 ### Added

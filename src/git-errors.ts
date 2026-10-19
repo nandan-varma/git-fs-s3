@@ -165,3 +165,13 @@ export function formatErrorResponse(error: unknown): {
 		},
 	};
 }
+
+/** A missing repository, ref, path or object: on a read path that's a 404. */
+export function isNotFoundError(error: unknown): boolean {
+	return (
+		error instanceof GitPathNotFoundError ||
+		error instanceof GitObjectNotFoundError ||
+		error instanceof GitRefNotFoundError ||
+		error instanceof GitRepositoryNotFoundError
+	);
+}

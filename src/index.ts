@@ -30,6 +30,7 @@ export {
 	GitRateLimitError,
 	GitRefNotFoundError,
 	GitRepositoryNotFoundError,
+	isNotFoundError,
 	type MergeConflictDetail,
 } from "./git-errors.js";
 export { createGitFs, type GitFs } from "./git-fs.js";
@@ -49,6 +50,7 @@ export {
 	parsePackFileName,
 	READABLE_PACK_FILE_KINDS,
 } from "./pack-files.js";
+export { deletePrefix, movePrefix } from "./prefix.js";
 export {
 	isFullSha,
 	isSafeBranchName,
@@ -61,6 +63,7 @@ export {
 export {
 	CircuitOpenError,
 	createRetryStore,
+	isRetryableError,
 	type RetryOptions,
 } from "./retry.js";
 export { MemoryObjectStore } from "./stores/memory.js";

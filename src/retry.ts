@@ -64,7 +64,14 @@ const RETRYABLE_CODES = new Set([
 	"EPROTO",
 ]);
 
-function defaultIsRetryable(error: unknown): boolean {
+/**
+ * The default retry classifier: network faults, timeouts, throttling and HTTP
+ * 5xx/429 (including `$metadata.httpStatusCode`-shaped errors). `fetch`
+ * reports a dropped connection as a bare `TypeError`, which counts too.
+ * Compose it in a custom `isRetryable`.
+ */
+export function isRetryableError(error: unknown): boolean {
+	if (error instanceof TypeError) return true;
 	if (typeof error !== "object" || error === null) return false;
 	const err = error as {
 		name?: string;
@@ -95,7 +102,7 @@ export function createRetryStore(
 	const initialDelayMs = options.initialDelayMs ?? 100;
 	const maxDelayMs = options.maxDelayMs ?? 5000;
 	const jitter = options.jitter ?? 0.3;
-	const isRetryable = options.isRetryable ?? defaultIsRetryable;
+	const isRetryable = options.isRetryable ?? isRetryableError;
 	const breaker =
 		options.breaker === false
 			? null
