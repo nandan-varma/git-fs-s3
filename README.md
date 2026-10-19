@@ -1,5 +1,11 @@
 # git-fs-s3
 
+> **Moved.** `git-fs-s3` is now developed in the PushStack monorepo:
+> [nandan-varma/pushstack/packages/git-fs-s3](https://github.com/nandan-varma/pushstack/tree/main/packages/git-fs-s3)
+> (full history preserved). Issues and pull requests go there. The npm package name is unchanged.
+
+# git-fs-s3
+
 [![npm version](https://img.shields.io/npm/v/git-fs-s3.svg)](https://www.npmjs.com/package/git-fs-s3)
 [![CI](https://github.com/nandan-varma/git-fs-s3/actions/workflows/ci.yml/badge.svg)](https://github.com/nandan-varma/git-fs-s3/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/git-fs-s3.svg)](LICENSE)
