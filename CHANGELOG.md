@@ -3,6 +3,16 @@
 Releases of `git-fs-s3`, derived from this repository's release history. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.13.0] - 2026-10-19
+
+### Changed
+
+- Requires isomorphic-git 1.44.3 or later (peer range and dev dependency).
+  Earlier versions swallowed read and readdir errors other than
+  file-not-found (fixed upstream in 1.44.3, isomorphic-git#2461), so a
+  transient object-store failure could surface as a missing object instead
+  of an error.
+
 ## [0.12.1] - 2026-10-19
 
 ### Fixed
